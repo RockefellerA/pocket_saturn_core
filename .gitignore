@@ -1,0 +1,54 @@
+# Quartus build outputs
+db/
+incremental_db/
+output_files/
+qdb/
+tmp-clearbox/
+greybox_tmp/
+simulation/
+*.qws
+*.qdf
+*.rpt
+*.summary
+*.smsg
+*.done
+*.sof
+*.pof
+*.rbf
+*.rbf_r
+*.jdi
+*.pin
+*.sld
+*.qar
+*.qarlog
+*.bak
+c5_pin_model_dump.txt
+PLLJ_PLLSPE_INFO.txt
+
+# CD block firmware: build outputs and the generated images
+src/fw/cdb/obj/
+src/fpga/rtl/Saturn/CD/*.hex
+
+# memory images (apf/build_id.mif is part of the project)
+*.mif
+!src/fpga/apf/build_id.mif
+
+# BIOS, games and saves never go in the repository
+*.rom
+*.bin
+*.cue
+*.chd
+*.iso
+*.img
+*.sav
+!dist/Cores/*/icon.bin
+!dist/Platforms/_images/*.bin
+
+# packaging outputs
+build/
+*.zip
+
+# OS / tools
+.DS_Store
+__pycache__/
+*.pyc

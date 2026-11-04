@@ -1,0 +1,22 @@
+FemtoRV32 "quark" (RV32I), the CPU of the CD block HLE with the macro CDB_FEMTORV
+================================================================================
+
+Upstream     https://github.com/BrunoLevy/learn-fpga (FemtoRV32, Bruno Levy and Matthias Koch), BSD 3-Clause License:
+             LICENSE here is the repository's LICENSE, unchanged.
+Version      commit 5c08c870315c09ccd9ec64ccde20ab3375b3f273 (2025-11-18), files
+               FemtoRV/RTL/PROCESSOR/femtorv32_quark.v  git blob 52705e57b8eedf37387a32284eb4996116610b1c
+               LICENSE                                  git blob 8c1f9585eec9c2a0418183622cabaa37e732c1b2 (copied as is)
+Used by      rtl/Saturn/CD/CDB_HLE.sv when CDB_FEMTORV is defined (requires CD_HLE): it runs the CD block HLE firmware
+             (and the SMPC firmware with SMPC_FW) in place of the PicoRV32, behind the adapter CDB_HLE_FEMTORV at the
+             end of CDB_HLE.sv. Without CDB_FEMTORV this file is empty after preprocessing.
+
+Local changes (femtorv32_quark.v, each marked "CDB_HLE local change"):
+1. The file is inside `ifdef CDB_FEMTORV and sets two of the quark's own options for the CD block:
+   NRV_TWOLEVEL_SHIFTER (shifts move 4 bits per clock) and NRV_COUNTER_WIDTH 1 (the cycle counter is read only by
+   SYSTEM instructions; the firmware has none). Both are `undef'd again at the end of the file.
+2. The register file: Quartus turned the array, read inside the state machine, into 1,024 registers. It is now two
+   32 x 32 RAMs (module FemtoRV32_RegRAM, added at the end of the file), written as the array was, with a registered
+   read port that loads rs1 / rs2 in exactly the clocks the state machine loaded them; nothing writes the register
+   file in those clocks, so the behaviour is cycle for cycle the original's. The RAMs start at 0, which replaces the
+   BENCH-only initial write of x0 (x0 is never written).
+Nothing else is changed (no other line of the upstream file differs).

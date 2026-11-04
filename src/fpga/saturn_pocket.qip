@@ -1,0 +1,51 @@
+# SEGA Saturn Pocket build (work/pocket, P2): source list. Paths are relative to this file = the Quartus project
+# directory, which holds (as symlinks in work/pocket/src/fpga, as dereferenced copies in a pocketbuild.sh build):
+#   rtl        -> work/Saturn_MiSTer/rtl   the core, by reference (never edited here); its files.qip minus MiSTer's
+#                                          platform files (hps_ext, ddram, vdp1_fb, cofi, hps2cdd, hps2sec) and the
+#                                          non-HLE CD block CPU (SH7034.qip): with CD_HLE nothing instantiates them
+#   glue       -> work/glue/rtl            glue blocks, unmodified, by reference
+#   pocket_rtl -> work/pocket/rtl          the Pocket top (saturn_top), new blocks, modified glue copies (psram0_arb)
+# The project directory must hold rtl/: CDB_HLE's FW_FILE ("rtl/Saturn/CD/cdb_hle_pocket_fw.hex", set in
+# rtl/Saturn/Saturn.sv under CD_EXTIO) is project-relative, as in the MiSTer project.
+
+# ---- core (Saturn_MiSTer files.qip order)
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) rtl/FX68K/fx68k.qip ]
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) rtl/SH/SH7604/SH7604.qip ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/SH_mem.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/SH7604_mem.sv ]
+set_global_assignment -name QIP_FILE [file join $::quartus(qip_path) rtl/Saturn/Saturn.qip ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) rtl/CEGen.vhd ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) rtl/bram.vhd ]
+set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) rtl/mlab.vhd ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/sdram1.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/hps2pad.sv ]
+
+# ---- glue (work/glue/rtl, unmodified)
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) glue/clk_pll_core.v ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/clk_reconf.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/psram_phy.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/wr_queue.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/fb_queue.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/fb_sram.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/vdp1fb_ext.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/cd_apf.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/cd_ring.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/cd_stream.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/cd_src_b.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/av_video.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/av_audio48.sv ]
+
+# ---- Pocket top and new blocks (work/pocket/rtl)
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/psram0_arb.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_reset.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_settings.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_pad.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_loader.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/pk_save.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) pocket_rtl/saturn_top.sv ]
+
+# ---- APF core top (core/): template parts as in the sotn port
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) core/core_top.v ]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) core/core_bridge_cmd.v ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) core/sound_i2s.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) core/sync_fifo.sv ]
