@@ -226,3 +226,133 @@ module SH_regram32 (
 		altdpram_component.wrcontrol_aclr = "OFF",
 		altdpram_component.wrcontrol_reg = "INCLOCK";
 endmodule
+
+`ifdef FRESH_SH2_REGM10K
+// FRESH_SH2_REGM10K (fresh-eyes review, sh2 item 1): the register file's two read-port copies in M10K blocks instead of
+// MLABs (an MLAB costs a whole LAB however small: 4 LABs for the two cores' files). An M10K read is synchronous, and
+// the read index (the decoder row's RA.N / RB.N) exists only in the ID clock, so the read is registered at the END of
+// the ID clock (RD_EN) and the block's output then IS the pipeline's EX.RA / EX.RB register: it holds while RD_EN is 0
+// (the M10K read enable), and a write at the read edge returns the old word (OLD_DATA), as the MLAB's asynchronous read
+// in the ID clock did not see that edge's write either. The core zeroes the operands after a soft reset itself
+// (SH_core: PIPE.EX.RA <= 0 on RES_N; here a one-bit flag). Same single write port as SH2_regfile: port A in CE clocks,
+// the latched port B in the clock after. Not for DEBUG builds (their register view reads the file at DBG_REGN).
+module SH2_regfile_m10k (
+	input             CLK,
+	input             RST_N,
+	input             CE,
+	input             EN,
+	
+	input       [4:0] WA_ADDR,
+	input      [31:0] WA_D,
+	input             WAE,
+	input       [4:0] WB_ADDR,
+	input      [31:0] WB_D,
+	input             WBE,
+	
+	input       [4:0] RA_ADDR,
+	input       [4:0] RB_ADDR,
+	input             RD_EN,		//read RA_ADDR / RB_ADDR at the edge ending this clock; otherwise RA_Q / RB_Q hold
+	output     [31:0] RA_Q,
+	output     [31:0] RB_Q,
+	output     [31:0] R0_Q
+);
+	
+	bit  [4:0] WB_ADDR_LATCH;
+	bit [31:0] WB_D_LATCH;
+	bit        WBE_LATCH;
+	always @(posedge CLK or negedge RST_N) begin
+		if (!RST_N) begin
+			WB_ADDR_LATCH <= '0;
+			WB_D_LATCH <= '0;
+			WBE_LATCH <= 0;
+		end
+		else begin
+			WBE_LATCH <= 0;
+			if (CE) begin
+				WB_ADDR_LATCH <= WB_ADDR;
+				WB_D_LATCH <= WB_D;
+				WBE_LATCH <= WBE;
+			end
+		end
+	end
+	
+	wire  [4:0] W_ADDR = CE ? WA_ADDR : WB_ADDR_LATCH;
+	wire [31:0] REG_D = CE ? WA_D : WB_D_LATCH;
+	wire        REG_WE = (WAE & CE) | WBE_LATCH;
+	SH_regram32_m10k regramA(.clock(CLK), .wraddress(W_ADDR), .data(REG_D), .wren(REG_WE & EN), .rdaddress(RA_ADDR), .rden(RD_EN), .q(RA_Q));
+	SH_regram32_m10k regramB(.clock(CLK), .wraddress(W_ADDR), .data(REG_D), .wren(REG_WE & EN), .rdaddress(RB_ADDR), .rden(RD_EN), .q(RB_Q));
+
+	bit  [31:0] GR0;
+	always @(posedge CLK or negedge RST_N) begin
+		if (!RST_N) begin
+			GR0 <= '0;
+		end
+		else if (EN) begin
+			if (REG_WE && W_ADDR == 5'd0) begin
+				GR0 <= REG_D;
+			end
+		end
+	end
+	assign R0_Q = GR0;
+	
+endmodule
+
+// 32 x 32 M10K, synchronous read with read enable (the output holds while rden is 0), old data on a read of the word
+// written at the same edge
+module SH_regram32_m10k (
+	input         clock,
+	input  [31:0] data,
+	input   [4:0] rdaddress,
+	input   [4:0] wraddress,
+	input         wren,
+	input         rden,
+	output [31:0] q
+);
+	altsyncram	altsyncram_component (
+				.address_a (wraddress),
+				.address_b (rdaddress),
+				.clock0 (clock),
+				.data_a (data),
+				.wren_a (wren),
+				.rden_b (rden),
+				.q_b (q),
+				.aclr0 (1'b0),
+				.aclr1 (1'b0),
+				.addressstall_a (1'b0),
+				.addressstall_b (1'b0),
+				.byteena_a (1'b1),
+				.byteena_b (1'b1),
+				.clock1 (1'b1),
+				.clocken0 (1'b1),
+				.clocken1 (1'b1),
+				.clocken2 (1'b1),
+				.clocken3 (1'b1),
+				.data_b ({32{1'b1}}),
+				.eccstatus (),
+				.q_a (),
+				.rden_a (1'b1),
+				.wren_b (1'b0));
+	defparam
+		altsyncram_component.address_aclr_b = "NONE",
+		altsyncram_component.address_reg_b = "CLOCK0",
+		altsyncram_component.rdcontrol_reg_b = "CLOCK0",
+		altsyncram_component.clock_enable_input_a = "BYPASS",
+		altsyncram_component.clock_enable_input_b = "BYPASS",
+		altsyncram_component.clock_enable_output_b = "BYPASS",
+		altsyncram_component.intended_device_family = "Cyclone V",
+		altsyncram_component.lpm_type = "altsyncram",
+		altsyncram_component.numwords_a = 32,
+		altsyncram_component.numwords_b = 32,
+		altsyncram_component.operation_mode = "DUAL_PORT",
+		altsyncram_component.outdata_aclr_b = "NONE",
+		altsyncram_component.outdata_reg_b = "UNREGISTERED",
+		altsyncram_component.power_up_uninitialized = "FALSE",
+		altsyncram_component.ram_block_type = "M10K",
+		altsyncram_component.read_during_write_mode_mixed_ports = "OLD_DATA",
+		altsyncram_component.widthad_a = 5,
+		altsyncram_component.widthad_b = 5,
+		altsyncram_component.width_a = 32,
+		altsyncram_component.width_b = 32,
+		altsyncram_component.width_byteena_a = 1;
+endmodule
+`endif

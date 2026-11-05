@@ -150,6 +150,31 @@ module SH7604_CACHE (
 	// the tags are only written on CACHE_UPDATE or CACHE_ADDR_WRITE (CTAG_WE), both with CACHE_WR_ADDR[28:10]
 	wire [18:0] CTAG_D = CACHE_WR_ADDR[28:10];
 	wire  [3:0] CTAG_WE = ({4{CACHE_UPDATE}} & CACHE_WR_WAY) | ({4{CACHE_ADDR_WRITE}} & AddrToWay(CCR.W));
+`ifdef FRESH_SH2_TAGPACK
+	// FRESH_SH2_TAGPACK (fresh-eyes review, sh2 item 2): the four tag RAMs (64 x 19, one M10K each at 12 % fill) packed
+	// two ways per M10K: a 64 x 36 block with four 9-bit byte lanes (altsyncram allows byte sizes 8 and 9 only; the
+	// M10K has no 10-bit lanes), each way 18 bits in two lanes, written through its lanes' byte enables. The 19th tag
+	// bit of each way (A[28]) does not fit there: it lives in the valid/LRU words (vlru_a / vlru_b below, 17 -> 27
+	// bits: a third 9-bit lane, bits [21:18]), which are written at the same line as the tags (every tag write is also
+	// a valid/LRU write of that line), read for the lookup at CBUS_A_NEXT like the tags and forwarded after a write like
+	// them. vlru_a's read-modify-write keeps the bits of the ways not written; the lane is written on the normal
+	// (RST_N & EN & CE_R) clocks only, whose read-modify-write word is the line's own (A3's argument for vlru_a), never
+	// by the scrubber (whose word, read one clock ahead, is another line's after a CE_F clock in reset): a tag is never
+	// cleared, only overwritten, as before. Per CPU 6 M10K -> 4.
+	wire  [3:0] CTAG_WEN = CTAG_WE & {4{EN & CE_R}};
+	bit  [17:0] CTAG_M[4];
+	CACHE_TAG2_M10K tagp0(.clock(CLK), .wraddress(CACHE_WR_ADDR[9:4]), .data({CTAG_D[17:0], CTAG_D[17:0]}),
+	                      .byteena({CTAG_WEN[1], CTAG_WEN[1], CTAG_WEN[0], CTAG_WEN[0]}), .wren(CTAG_WEN[1] | CTAG_WEN[0]),
+	                      .rdaddress(CBUS_A_NEXT[9:4]), .q({CTAG_M[1], CTAG_M[0]}));
+	CACHE_TAG2_M10K tagp1(.clock(CLK), .wraddress(CACHE_WR_ADDR[9:4]), .data({CTAG_D[17:0], CTAG_D[17:0]}),
+	                      .byteena({CTAG_WEN[3], CTAG_WEN[3], CTAG_WEN[2], CTAG_WEN[2]}), .wren(CTAG_WEN[3] | CTAG_WEN[2]),
+	                      .rdaddress(CBUS_A_NEXT[9:4]), .q({CTAG_M[3], CTAG_M[2]}));
+	bit   [3:0] CTAG_WE_Q;				//tag ways written on the last clock edge
+	always @(posedge CLK) CTAG_WE_Q <= CTAG_WEN;
+	wire        WR_LINE_LOOKUP = CACHE_WR_ADDR[9:4] == CBUS_A[9:4];	//the line written is the line looked up
+	wire  [3:0] CTAG_FWD = CTAG_WE_Q & {4{WR_LINE_LOOKUP}};
+	bit  [18:0] CTAG_Q[4];				//{bit 18 from the valid/LRU lookup word, bits 17:0 from the tag blocks}: after vlru_b below
+`else
 	// Tags and the lookup copy of the valid/LRU words (vlru_b below) in M10K blocks. (Step G had MLABs: a 64-deep MLAB
 	// is two 32-deep ones plus an output mux, 20 ALMs and the mux for each of the five.) An M10K registers its read
 	// address, so it is given CBUS_A_NEXT, the core's address one clock early: during every clock its output is the
@@ -168,6 +193,7 @@ module SH7604_CACHE (
 	wire  [3:0] CTAG_FWD = CTAG_WE_Q & {4{WR_LINE_LOOKUP}};
 	bit  [18:0] CTAG_Q[4];
 	always_comb for (int i = 0; i < 4; i++) CTAG_Q[i] = CTAG_FWD[i] ? CTAG_D : CTAG_M[i];
+`endif
 	
 	// Valid bits and LRU: one MLAB word per line, {GEN[6:0], V3, V2, V1, V0, LRU[5:0]}, in two copies: vlru_a is read at
 	// the line being written (read-modify-write), vlru_b at the line being looked up. A purge (CCR.CP) cannot clear
@@ -195,7 +221,11 @@ module SH7604_CACHE (
 	wire        PURGE = ~RST_N | (~(EN & CE_R) & CCR.CP);
 	wire  [5:0] LRU_WRADDR = VLRU_NORMAL ? CACHE_WR_ADDR[9:4] : SCRUB;
 	wire  [5:0] VLRU_A_RA;			//(A3) vlru_a's read address, one clock ahead (below, after the state machine's registers)
+`ifdef FRESH_SH2_TAGPACK
+	bit  [26:0] VLRU_A_Q,VLRU_B_Q;	//{5'b0, TAGH[3:0] (tag bit 18 per way), 1'b0, GEN[6:0], V3..V0, LRU[5:0]}: lane 2 = [26:18]
+`else
 	bit  [16:0] VLRU_A_Q,VLRU_B_Q;
+`endif
 	wire        PURGED_A = ~RST_N | VLRU_A_Q[16:10] != PURGE_GEN;
 	wire        PURGED_B = ~RST_N | VLRU_B_Q[16:10] != PURGE_GEN;
 	wire  [3:0] VALID_A = VLRU_A_Q[9:6] & {4{~PURGED_A}};
@@ -203,7 +233,15 @@ module SH7604_CACHE (
 	wire  [5:0] LRU_D = CACHE_ADDR_WRITE ? CBUS_DI[9:4] : LRUSelect(CACHE_WR_WAY, LRU_A_Q);
 	wire        LRU_WE = CACHE_UPDATE | CACHE_WRITE | CACHE_READ | CACHE_ADDR_WRITE;
 	wire  [3:0] VALID_D = (CVALID_WE & {4{CVALID_D}}) | (~CVALID_WE & VALID_A);
+`ifdef FRESH_SH2_TAGPACK
+	//tag bit 18 of the ways written on this edge (CTAG_WEN: only on EN & CE_R clocks with RST_N, as the tag blocks), the
+	//other ways' bits kept from the word read; the lane is only written on those (normal) clocks: VLRU_BE
+	wire  [3:0] TAGH_D = (CTAG_WEN & {4{CTAG_D[18]}}) | (~CTAG_WEN & VLRU_A_Q[21:18]);
+	wire [26:0] VLRU_D = {5'b00000, TAGH_D, 1'b0, VLRU_NORMAL ? PURGE_GEN : PURGE_GEN_M1, VALID_D, LRU_WE ? LRU_D : LRU_A_Q};
+	wire  [2:0] VLRU_BE = {VLRU_NORMAL, 1'b1, 1'b1};
+`else
 	wire [16:0] VLRU_D = {VLRU_NORMAL ? PURGE_GEN : PURGE_GEN_M1, VALID_D, LRU_WE ? LRU_D : LRU_A_Q};
+`endif
 	bit         VLRU_NWE_Q;			//normal valid/LRU write on the last clock edge, at CACHE_WR_ADDR[9:4]
 	//(A3) the scrubber does not rewrite the line a normal write wrote on the last edge (vlru_a's M10K read of that edge
 	//returned the word before the write; the written word is current, so the MLAB's scrubber did not write it either)
@@ -211,18 +249,33 @@ module SH7604_CACHE (
 	wire        VLRU_WE = VLRU_NORMAL ? |CVALID_WE | LRU_WE : PURGED_A & ~VLRU_SKIP;
 
 	//(A3) vlru_a in M10K, read one clock ahead (VLRU_A_RA; see work/a3/tools/mk_cache_vlru.py for why it is exact)
+`ifdef FRESH_SH2_TAGPACK
+	CACHE_VLRU27_M10K vlru_a(.clock(CLK), .wraddress(LRU_WRADDR), .data(VLRU_D), .byteena(VLRU_BE), .wren(VLRU_WE), .rdaddress(VLRU_A_RA), .q(VLRU_A_Q));
+`else
 	CACHE_VLRU_M10K vlru_a(.clock(CLK), .wraddress(LRU_WRADDR), .data(VLRU_D), .wren(VLRU_WE), .rdaddress(VLRU_A_RA), .q(VLRU_A_Q));
+`endif
 	// vlru_b in M10K (see the tags above): forwarded after a normal write to the line looked up; a scrubber write needs
 	// no forwarding, since it replaces a purged word by another purged one (the old word's generation is 1-65 behind
 	// PURGE_GEN before the edge, so it is not PURGE_GEN after it either, whether or not a purge comes with that edge).
+`ifdef FRESH_SH2_TAGPACK
+	bit  [26:0] VLRU_BM_Q;
+	CACHE_VLRU27_M10K vlru_b(.clock(CLK), .wraddress(LRU_WRADDR), .data(VLRU_D), .byteena(VLRU_BE), .wren(VLRU_WE), .rdaddress(CBUS_A_NEXT[9:4]), .q(VLRU_BM_Q));
+	bit  [26:0] VLRU_D_Q;			//its data (a forwarded word is a normal write's: all lanes written)
+`else
 	bit  [16:0] VLRU_BM_Q;
 	CACHE_VLRU_M10K vlru_b(.clock(CLK), .wraddress(LRU_WRADDR), .data(VLRU_D), .wren(VLRU_WE), .rdaddress(CBUS_A_NEXT[9:4]), .q(VLRU_BM_Q));
 	bit  [16:0] VLRU_D_Q;			//its data
+`endif
 	always @(posedge CLK) begin
 		VLRU_NWE_Q <= VLRU_WE & VLRU_NORMAL;
 		VLRU_D_Q <= VLRU_D;
 	end
 	assign VLRU_B_Q = VLRU_NWE_Q && WR_LINE_LOOKUP ? VLRU_D_Q : VLRU_BM_Q;
+`ifdef FRESH_SH2_TAGPACK
+	//the full tags at the line looked up: bits 17:0 from the tag blocks (the word written on the last edge forwarded),
+	//bit 18 from the lookup valid/LRU word (forwarded the same way: VLRU_NWE_Q is set whenever CTAG_WE_Q is)
+	always_comb for (int i = 0; i < 4; i++) CTAG_Q[i] = {VLRU_B_Q[18 + i], CTAG_FWD[i] ? CTAG_D[17:0] : CTAG_M[i]};
+`endif
 
 	always @(posedge CLK) begin
 		if (!VLRU_NORMAL) SCRUB <= SCRUB + 6'd1;
@@ -238,8 +291,14 @@ module SH7604_CACHE (
 	always_comb begin
 		bit [31: 0] CACHE_ADDR_AREA_DATA;
 
+`ifdef FRESH_SH2_TAGPACK
+		//as below, bits 17:0 from the tag blocks (the forwarded case sharing one comparator), bit 18 from the lookup
+		//valid/LRU word
+		for (int i = 0; i < 4; i++) WAY_TAG[i] = (CTAG_FWD[i] ? CTAG_D[17:0] == CBUS_A[27:10] : CTAG_M[i] == CBUS_A[27:10]) & (VLRU_B_Q[18 + i] == CBUS_A[28]);
+`else
 		//CTAG_Q[i] == CBUS_A[28:10], with the forwarded case sharing one comparator
 		for (int i = 0; i < 4; i++) WAY_TAG[i] = CTAG_FWD[i] ? CTAG_D == CBUS_A[28:10] : CTAG_M[i] == CBUS_A[28:10];
+`endif
 
 		WAY_HIT = WAY_TAG & CVALID_Q;
 

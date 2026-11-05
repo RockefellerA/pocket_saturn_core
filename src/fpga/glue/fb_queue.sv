@@ -53,6 +53,9 @@ module fb_queue #(
 	output logic          empty,       // nothing queued or in flight
 	output logic   [CD:0] cmd_count,   // commands queued (counting the registered request)
 	output logic          overflow,    // a request arrived with no room (must never happen: sized so)
+`ifdef FRESH_FBRDY
+	output logic          full_n,      // (FRESH_FBRDY) the value full takes at the next edge (BWC only)
+`endif
 	// memory side
 	output logic          m_valid,
 	input  logic          m_ready,
@@ -79,12 +82,24 @@ module fb_queue #(
 	logic          rv, rwe;
 	logic [AW-1:0] raddr;
 	logic    [4:0] rlen;
+`ifndef FRESH_FBQ_RDATA
 	logic   [15:0] rdata;
+`endif
 	logic    [1:0] rbe;
 	logic [TW-1:0] rtag;
+`ifdef FRESH_FBQ_RDATA
+	// (FRESH_FBQ_RDATA, work/fresh/glue, 2026-11-04; exact by the VDP1's hold, see the report) no copy of the write data:
+	// the data input is read in the clk after the request (vdp1fb_ext: FBD_D is held by the VDP1 from a request until
+	// its next one, at least two clk_sys later; FBE_D is the EWDR register; the prefetch sends no data)
+	wire [15:0] rdata = req_data;
+	always_ff @(posedge clk) begin
+		rv <= req_valid && !rst; rwe <= req_we; raddr <= req_addr; rlen <= req_len; rbe <= req_be; rtag <= req_tag;
+	end
+`else
 	always_ff @(posedge clk) begin
 		rv <= req_valid && !rst; rwe <= req_we; raddr <= req_addr; rlen <= req_len; rdata <= req_data; rbe <= req_be; rtag <= req_tag;
 	end
+`endif
 `ifdef A6_DBG
 	logic          rnm;
 	always_ff @(posedge clk) rnm <= req_nm;
@@ -133,6 +148,9 @@ module fb_queue #(
 	wire cpush  = rv && !merge && !bmerge;
 
 	assign full      = (ccnt >= (CD+1)'(CN - 2)) || (dcnt >= (DD+1)'(DN - 4));
+`ifdef FRESH_FBRDY
+	assign full_n    = 1'b1;   // (FRESH_FBRDY) not implemented for the run-merge queue (the Pocket build uses BWC)
+`endif
 	assign empty     = ccnt == '0 && !rinfl && dcnt == '0 && !rv;
 	assign cmd_count = ccnt + (CD+1)'(rv);
 	assign overflow  = rv && ((cpush && ccnt == (CD+1)'(CN)) || (rwe && !bmerge && dcnt == (DD+1)'(DN)));
@@ -268,6 +286,15 @@ module fb_queue #(
 	// slots in use: queued commands + the burst being popped (or its last word not yet cleared)
 	wire [CD:0] cused = ccnt + (CD+1)'(dp_fly || clr_v);
 	assign full      = (cused >= (CD+1)'(CN - 2)) || swp;
+`ifdef FRESH_FBRDY
+	// (FRESH_FBRDY, work/fresh/glue, 2026-11-04) full one clk ahead, from the next values of its terms (the always block
+	// below: ccnt, dp_fly, clr_v, swp; rst sets swp), so that vdp1fb_ext can keep FB_RDY in a register (timing)
+	wire [CD:0] ccnt_n  = ccnt + (CD+1)'(cpush) - (CD+1)'(take);
+	wire        dpfly_n = take_w ? 1'b1 : (m_wd_pop && dp_left == 5'd0) ? 1'b0 : dp_fly;
+	wire        clrv_n  = m_wd_pop ? 1'b1 : (pa_clr && !swp) ? 1'b0 : clr_v;
+	wire        swp_n   = swp && !(!pa_req && &swp_a);
+	assign full_n = rst || (ccnt_n + (CD+1)'(dpfly_n || clrv_n) >= (CD+1)'(CN - 2)) || swp_n;
+`endif
 	assign empty     = ccnt == '0 && !rinfl && !dp_fly && !clr_v && !swp && !rv;
 	assign cmd_count = ccnt + (CD+1)'(rv);
 

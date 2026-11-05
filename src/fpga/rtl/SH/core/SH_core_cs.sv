@@ -153,6 +153,40 @@ module SH_core_cs
 	wire  [4:0] RAN1 = REGS_RAN;
 `endif
 	bit [31: 0] RAQ0, RBQ0, R0Q0, RAQ1, RBQ1, R0Q1;
+`ifdef FRESH_SH2_REGM10K
+`ifdef DEBUG
+	$error("FRESH_SH2_REGM10K does not support DEBUG builds (the register view reads the file at DBG_REGN)");
+`endif
+	// FRESH_SH2_REGM10K (fresh-eyes review, sh2 item 1): the register files in M10K (SH2_regfile_m10k). Each file is
+	// read at the edge that ends its thread's ID clock when SH_core loads PIPE.EX.RA / RB (RES_N & EN & !ID_STALL), and
+	// its output then holds: it is that thread's PIPE_1.EX.RA / RB (used one clock later by the EX operand logic, EXOP),
+	// so those pipeline registers, and their X copies, have no reader and go. SH_core zeroes them on a soft reset
+	// (every clock RES_N is low, no load): the flag EXR_Z does that here. The loads PIPE_1.EX.RA/RB <= REGS_RAQ/RBQ
+	// below are left in place and are dead (no fanout).
+	wire        RD_EN0 =  PH & RES_N & EN & ~ID_STALL;
+	wire        RD_EN1 = ~PH & RES_N & EN & ~ID_STALL;
+	bit         EXR_Z0, EXR_Z1;		//thread's PIPE.EX.RA / RB are 0 (soft reset since the last load)
+	always @(posedge CLK or negedge RST_N) begin
+		if (!RST_N) begin
+			EXR_Z0 <= 1;
+			EXR_Z1 <= 1;
+		end
+		else begin
+			if (!RES_N0) EXR_Z0 <= 1; else if (RD_EN0) EXR_Z0 <= 0;
+			if (!RES_N1) EXR_Z1 <= 1; else if (RD_EN1) EXR_Z1 <= 0;
+		end
+	end
+	SH2_regfile_m10k regfile0 (CLK, RST_N,  PH, EN, REGS_WAN, REGS_WAD, REGS_WAE, REGS_WBN, REGS_WBD, REGS_WBE,
+								RAN0, REGS_RBN, RD_EN0, RAQ0, RBQ0, R0Q0);
+	SH2_regfile_m10k regfile1 (CLK, RST_N, ~PH, EN, REGS_WAN, REGS_WAD, REGS_WAE, REGS_WBN, REGS_WBD, REGS_WBE,
+								RAN1, REGS_RBN, RD_EN1, RAQ1, RBQ1, R0Q1);
+	assign REGS_RAQ = PH ? RAQ0 : RAQ1;
+	assign REGS_RBQ = PH ? RBQ0 : RBQ1;
+	assign REGS_R0Q = PH ? R0Q0 : R0Q1;
+	//the other thread's PIPE_1.EX.RA / RB (the thread that executes in the next clock)
+	wire [31: 0] EXRA_1 = PH ? (RAQ1 & {32{~EXR_Z1}}) : (RAQ0 & {32{~EXR_Z0}});
+	wire [31: 0] EXRB_1 = PH ? (RBQ1 & {32{~EXR_Z1}}) : (RBQ0 & {32{~EXR_Z0}});
+`else
 	SH2_regfile regfile0 (CLK, RST_N,  PH, EN, REGS_WAN, REGS_WAD, REGS_WAE, REGS_WBN, REGS_WBD, REGS_WBE,
 								RAN0, RAQ0, REGS_RBN, RBQ0, R0Q0);
 	SH2_regfile regfile1 (CLK, RST_N, ~PH, EN, REGS_WAN, REGS_WAD, REGS_WAE, REGS_WBN, REGS_WBD, REGS_WBE,
@@ -160,6 +194,7 @@ module SH_core_cs
 	assign REGS_RAQ = PH ? RAQ0 : RAQ1;
 	assign REGS_RBQ = PH ? RBQ0 : RBQ1;
 	assign REGS_R0Q = PH ? R0Q0 : R0Q1;
+`endif
 
 
 	//**********************************************************
@@ -596,7 +631,11 @@ module SH_core_cs
 			BP_A = PIPE_1.WB2.RESB;
 		end
 		else begin
+`ifdef FRESH_SH2_REGM10K
+			BP_A = EXRA_1;
+`else
 			BP_A = PIPE_1.EX.RA;
+`endif
 		end
 
 		ra = BP_A;
@@ -620,7 +659,11 @@ module SH_core_cs
 			BP_B = PIPE_1.WB2.RESB;
 		end
 		else begin
+`ifdef FRESH_SH2_REGM10K
+			BP_B = EXRB_1;
+`else
 			BP_B = PIPE_1.EX.RB;
+`endif
 		end
 
 		case (PIPE_1.EX.DI.DP.RSB)

@@ -873,8 +873,10 @@ module VDP1 (
 					RIGHT_VERT <= VERTB;
 					POLY_S <= 2'b00;
 					TEXT_X <= '0;
+`ifndef FRESH_VCM_GDSP
 					LEFT_GHCOLOR <= RGBItoF(GHCOLOR_A);
 					RIGHT_GHCOLOR <= RGBItoF(GHCOLOR_B);
+`endif
 					CMD_ST <= CMDS_LINE_CALC;
 				end
 				
@@ -935,8 +937,10 @@ module VDP1 (
 				end
 				
 				CMDS_GRD_CALC_COL: begin
+`ifndef FRESH_VCM_GDSP
 					LEFT_GHCOLOR <= RGBItoF(GHCOLOR_A);
 					RIGHT_GHCOLOR <= RGBItoF(GHCOLOR_B);
+`endif
 					
 					GRD_CALC_1 <= GHCOLOR_A;
 					GRD_CALC_2 <= GHCOLOR_D;
@@ -1219,7 +1223,9 @@ module VDP1 (
 				end
 				
 				CMDS_GRD_CALC_ROW: begin
+`ifndef FRESH_VCM_GDSP
 					LINE_GHCOLOR <= DIR[0] ? RIGHT_GHCOLOR : LEFT_GHCOLOR;
+`endif
 					GRD_CALC_1 <= RGBFtoI(LEFT_GHCOLOR);
 					GRD_CALC_2 <= RGBFtoI(RIGHT_GHCOLOR);
 					GRD_CALC_S <= ROW_WIDTH;
@@ -1251,9 +1257,11 @@ module VDP1 (
 					if (LINE_DRAW_STEP) begin
 						LINE_VERTA.X <= LINE_VERTA_X_STEP;
 						
+`ifndef FRESH_VCM_GDSP
 						{LINE_GHCOLOR.R.INT,LINE_GHCOLOR.R.FRAC} <= {LINE_GHCOLOR.R.INT,LINE_GHCOLOR.R.FRAC} + ({GRD_STEP.R.INT,GRD_STEP.R.FRAC}^{17{DIR[0]^GRD_STEP.R.DIR}}) + (DIR[0]^GRD_STEP.R.DIR);
 						{LINE_GHCOLOR.G.INT,LINE_GHCOLOR.G.FRAC} <= {LINE_GHCOLOR.G.INT,LINE_GHCOLOR.G.FRAC} + ({GRD_STEP.G.INT,GRD_STEP.G.FRAC}^{17{DIR[0]^GRD_STEP.G.DIR}}) + (DIR[0]^GRD_STEP.G.DIR);
 						{LINE_GHCOLOR.B.INT,LINE_GHCOLOR.B.FRAC} <= {LINE_GHCOLOR.B.INT,LINE_GHCOLOR.B.FRAC} + ({GRD_STEP.B.INT,GRD_STEP.B.FRAC}^{17{DIR[0]^GRD_STEP.B.DIR}}) + (DIR[0]^GRD_STEP.B.DIR);
+`endif
 					end
 					  
 					if ((LINE_VERTA.X == LINE_VERTB.X && LINE_DRAW_STEP) || (IS_PAT_EC && EC_FIND && TEXT_X_READ_STEP)) begin
@@ -1297,9 +1305,11 @@ module VDP1 (
 						end
 						LINE_ERROR <= NEXT_LINE_ERROR;
 					
+`ifndef FRESH_VCM_GDSP
 						{LINE_GHCOLOR.R.INT,LINE_GHCOLOR.R.FRAC} <= {LINE_GHCOLOR.R.INT,LINE_GHCOLOR.R.FRAC} + ({GRD_STEP.R.INT,GRD_STEP.R.FRAC}^{17{DIR[0]^GRD_STEP.R.DIR}}) + (DIR[0]^GRD_STEP.R.DIR);
 						{LINE_GHCOLOR.G.INT,LINE_GHCOLOR.G.FRAC} <= {LINE_GHCOLOR.G.INT,LINE_GHCOLOR.G.FRAC} + ({GRD_STEP.G.INT,GRD_STEP.G.FRAC}^{17{DIR[0]^GRD_STEP.G.DIR}}) + (DIR[0]^GRD_STEP.G.DIR);
 						{LINE_GHCOLOR.B.INT,LINE_GHCOLOR.B.FRAC} <= {LINE_GHCOLOR.B.INT,LINE_GHCOLOR.B.FRAC} + ({GRD_STEP.B.INT,GRD_STEP.B.FRAC}^{17{DIR[0]^GRD_STEP.B.DIR}}) + (DIR[0]^GRD_STEP.B.DIR);
+`endif
 					end
 
 					if (IS_PAT_EC && EC_FIND && TEXT_X_READ_STEP) begin
@@ -1357,12 +1367,14 @@ module VDP1 (
 						LEFT_COL_ERROR <= NEXT_LEFT_COL_ERROR;
 						RIGHT_COL_ERROR <= NEXT_RIGHT_COL_ERROR;
 						
+`ifndef FRESH_VCM_GDSP
 						{LEFT_GHCOLOR.R.INT, LEFT_GHCOLOR.R.FRAC } <= {LEFT_GHCOLOR.R.INT, LEFT_GHCOLOR.R.FRAC } + ({LEFT_GHCOLOR_STEP.R.INT, LEFT_GHCOLOR_STEP.R.FRAC }^{17{LEFT_GHCOLOR_STEP.R.DIR }}) + LEFT_GHCOLOR_STEP.R.DIR;
 						{LEFT_GHCOLOR.G.INT, LEFT_GHCOLOR.G.FRAC } <= {LEFT_GHCOLOR.G.INT, LEFT_GHCOLOR.G.FRAC } + ({LEFT_GHCOLOR_STEP.G.INT, LEFT_GHCOLOR_STEP.G.FRAC }^{17{LEFT_GHCOLOR_STEP.G.DIR }}) + LEFT_GHCOLOR_STEP.G.DIR;
 						{LEFT_GHCOLOR.B.INT, LEFT_GHCOLOR.B.FRAC } <= {LEFT_GHCOLOR.B.INT, LEFT_GHCOLOR.B.FRAC } + ({LEFT_GHCOLOR_STEP.B.INT, LEFT_GHCOLOR_STEP.B.FRAC }^{17{LEFT_GHCOLOR_STEP.B.DIR }}) + LEFT_GHCOLOR_STEP.B.DIR;
 						{RIGHT_GHCOLOR.R.INT,RIGHT_GHCOLOR.R.FRAC} <= {RIGHT_GHCOLOR.R.INT,RIGHT_GHCOLOR.R.FRAC} + ({RIGHT_GHCOLOR_STEP.R.INT,RIGHT_GHCOLOR_STEP.R.FRAC}^{17{RIGHT_GHCOLOR_STEP.R.DIR}}) + RIGHT_GHCOLOR_STEP.R.DIR;
 						{RIGHT_GHCOLOR.G.INT,RIGHT_GHCOLOR.G.FRAC} <= {RIGHT_GHCOLOR.G.INT,RIGHT_GHCOLOR.G.FRAC} + ({RIGHT_GHCOLOR_STEP.G.INT,RIGHT_GHCOLOR_STEP.G.FRAC}^{17{RIGHT_GHCOLOR_STEP.G.DIR}}) + RIGHT_GHCOLOR_STEP.G.DIR;
 						{RIGHT_GHCOLOR.B.INT,RIGHT_GHCOLOR.B.FRAC} <= {RIGHT_GHCOLOR.B.INT,RIGHT_GHCOLOR.B.FRAC} + ({RIGHT_GHCOLOR_STEP.B.INT,RIGHT_GHCOLOR_STEP.B.FRAC}^{17{RIGHT_GHCOLOR_STEP.B.DIR}}) + RIGHT_GHCOLOR_STEP.B.DIR;
+`endif
 						
 						CMD_ST <= !CMD.CMDPMOD.PCLP && !FAST ? CMDS_ROW_CLIP : CMDS_ROW_DRAW;
 						COL_D <= COL_D - 12'd1;
@@ -1374,22 +1386,28 @@ module VDP1 (
 							2'd0: begin
 								LEFT_VERT <= VERTB;
 								RIGHT_VERT <= VERTC;
+`ifndef FRESH_VCM_GDSP
 								LEFT_GHCOLOR <= RGBItoF(GHCOLOR_B);
 								RIGHT_GHCOLOR <= RGBItoF(GHCOLOR_C);
+`endif
 								CMD_ST <= CMDS_ROW_DRAW;
 							end
 							2'd1: begin
 								LEFT_VERT <= VERTC;
 								RIGHT_VERT <= VERTD;
+`ifndef FRESH_VCM_GDSP
 								LEFT_GHCOLOR <= RGBItoF(GHCOLOR_C);
 								RIGHT_GHCOLOR <= RGBItoF(GHCOLOR_D);
+`endif
 								CMD_ST <= CMDS_ROW_DRAW;
 							end
 							2'd2: begin
 								LEFT_VERT <= VERTD;
 								RIGHT_VERT <= VERTA;
+`ifndef FRESH_VCM_GDSP
 								LEFT_GHCOLOR <= RGBItoF(GHCOLOR_D);
 								RIGHT_GHCOLOR <= RGBItoF(GHCOLOR_A);
+`endif
 								CMD_ST <= CMDS_ROW_DRAW;
 							end
 							2'd3: begin
@@ -1471,6 +1489,42 @@ module VDP1 (
 	
 	bit          CPU_VRAM_BUSY;
 	
+`ifdef FRESH_VCM_GDSP
+	//FRESH_VCM_GDSP: the nine gouraud accumulators (LEFT / RIGHT / LINE colour x R / G / B, 17-bit 5.12) in DSP blocks
+	//(VDP1_GACC: one cyclonev_mac each, "sum of two 18 x 18 with accumulate": acc <= (ACC ? acc : 0) + AX*AY + BX*BY).
+	//The loads and steps are the ones the CMD_ST machine makes above (their statements are compiled out with this
+	//macro): a load is AX*AY (the colour << 12, or LEFT / RIGHT for LINE) with ACC = 0; a step is BX*BY = +-STEP with
+	//ACC = 1; otherwise AY = BY = 0 and ACC = 1 hold the value. GH_EN is the machine's enable (the RST_N / FRAME_START /
+	//DRAW_TERMINATE / EN branches above do not touch the accumulators).
+	wire         GH_EN   = RST_N && !FRAME_START && !DRAW_TERMINATE && EN;
+	wire         LR_LD_I = CMD_ST == CMDS_LINE_INIT || CMD_ST == CMDS_GRD_CALC_COL;
+	wire         LR_NEXT = CMD_ST == CMDS_LINE_NEXT && (CMD.CMDCTRL.COMM == 4'h5 || CMD.CMDCTRL.COMM == 4'h7) && POLY_S != 2'd3;
+	wire         LR_LD   = GH_EN && (LR_LD_I || LR_NEXT);
+	wire         LR_ST   = GH_EN && CMD_ST == CMDS_LINE_NEXT && CMD.CMDCTRL.COMM <= 4'h4;
+	RGB_t        L_LDC, R_LDC;
+	assign       L_LDC   = LR_LD_I ? GHCOLOR_A : POLY_S == 2'd0 ? GHCOLOR_B : POLY_S == 2'd1 ? GHCOLOR_C : GHCOLOR_D;
+	assign       R_LDC   = LR_LD_I ? GHCOLOR_B : POLY_S == 2'd0 ? GHCOLOR_C : POLY_S == 2'd1 ? GHCOLOR_D : GHCOLOR_A;
+	wire         N_LD    = GH_EN && CMD_ST == CMDS_GRD_CALC_ROW;
+	wire         N_ST    = GH_EN && LINE_DRAW_STEP && !DRAW_WAIT &&
+	                       (((CMD_ST == CMDS_NSPR_DRAW || CMD_ST == CMDS_SSPR_DRAW) && SPR_DATA_READY) ||
+	                        (CMD_ST == CMDS_LINE_DRAW && (SPR_DATA_READY || CMD.CMDCTRL.COMM >= 4'h4)));
+	RGBFP_t      N_LDV;
+	assign       N_LDV   = DIR[0] ? RIGHT_GHCOLOR : LEFT_GHCOLOR;
+	wire [16: 0] LR_Q,LG_Q,LB_Q,RR_Q,RG_Q,RB_Q,NR_Q,NG_Q,NB_Q;
+	VDP1_GACC GACC_LR(CLK, {13'b0,L_LDC.R}, {5'b0,LR_LD,12'b0}, {1'b0,LEFT_GHCOLOR_STEP.R.INT,LEFT_GHCOLOR_STEP.R.FRAC}, LR_ST && !LR_LD, LEFT_GHCOLOR_STEP.R.DIR, !LR_LD, LR_Q);
+	VDP1_GACC GACC_LG(CLK, {13'b0,L_LDC.G}, {5'b0,LR_LD,12'b0}, {1'b0,LEFT_GHCOLOR_STEP.G.INT,LEFT_GHCOLOR_STEP.G.FRAC}, LR_ST && !LR_LD, LEFT_GHCOLOR_STEP.G.DIR, !LR_LD, LG_Q);
+	VDP1_GACC GACC_LB(CLK, {13'b0,L_LDC.B}, {5'b0,LR_LD,12'b0}, {1'b0,LEFT_GHCOLOR_STEP.B.INT,LEFT_GHCOLOR_STEP.B.FRAC}, LR_ST && !LR_LD, LEFT_GHCOLOR_STEP.B.DIR, !LR_LD, LB_Q);
+	VDP1_GACC GACC_RR(CLK, {13'b0,R_LDC.R}, {5'b0,LR_LD,12'b0}, {1'b0,RIGHT_GHCOLOR_STEP.R.INT,RIGHT_GHCOLOR_STEP.R.FRAC}, LR_ST && !LR_LD, RIGHT_GHCOLOR_STEP.R.DIR, !LR_LD, RR_Q);
+	VDP1_GACC GACC_RG(CLK, {13'b0,R_LDC.G}, {5'b0,LR_LD,12'b0}, {1'b0,RIGHT_GHCOLOR_STEP.G.INT,RIGHT_GHCOLOR_STEP.G.FRAC}, LR_ST && !LR_LD, RIGHT_GHCOLOR_STEP.G.DIR, !LR_LD, RG_Q);
+	VDP1_GACC GACC_RB(CLK, {13'b0,R_LDC.B}, {5'b0,LR_LD,12'b0}, {1'b0,RIGHT_GHCOLOR_STEP.B.INT,RIGHT_GHCOLOR_STEP.B.FRAC}, LR_ST && !LR_LD, RIGHT_GHCOLOR_STEP.B.DIR, !LR_LD, RB_Q);
+	VDP1_GACC GACC_NR(CLK, {1'b0,N_LDV.R.INT,N_LDV.R.FRAC}, {17'b0,N_LD}, {1'b0,GRD_STEP.R.INT,GRD_STEP.R.FRAC}, N_ST && !N_LD, DIR[0]^GRD_STEP.R.DIR, !N_LD, NR_Q);
+	VDP1_GACC GACC_NG(CLK, {1'b0,N_LDV.G.INT,N_LDV.G.FRAC}, {17'b0,N_LD}, {1'b0,GRD_STEP.G.INT,GRD_STEP.G.FRAC}, N_ST && !N_LD, DIR[0]^GRD_STEP.G.DIR, !N_LD, NG_Q);
+	VDP1_GACC GACC_NB(CLK, {1'b0,N_LDV.B.INT,N_LDV.B.FRAC}, {17'b0,N_LD}, {1'b0,GRD_STEP.B.INT,GRD_STEP.B.FRAC}, N_ST && !N_LD, DIR[0]^GRD_STEP.B.DIR, !N_LD, NB_Q);
+	//the DIR bits of the colours are 0: RGBItoF loads 0 and the steps never change them
+	assign LEFT_GHCOLOR  = {1'b0,LB_Q,1'b0,LG_Q,1'b0,LR_Q};
+	assign RIGHT_GHCOLOR = {1'b0,RB_Q,1'b0,RG_Q,1'b0,RR_Q};
+	assign LINE_GHCOLOR  = {1'b0,NB_Q,1'b0,NG_Q,1'b0,NR_Q};
+`endif
 	bit  [11: 0] DRAW_X;
 	bit  [11: 0] DRAW_Y;
 	Pattern_t    DRAW_PAT;
@@ -2432,8 +2486,23 @@ module VDP1 (
 	end
 	assign CMD_READ_DONE = (VRAM_ST == VS_CMD_READ) && VRAM_RDY && (VRAM_READ_POS == 4'd15);
 	
+`ifdef FRESH_VCM_CLT
+	//FRESH_VCM_CLT: the colour look-up table in an M10K instead of an MLAB (a LAB). An M10K reads at the clock edge with
+	//the address it registers then, so it is given the value DRAW_PAT.C takes after the edge (PAT.C when DRAW_PAT loads,
+	//the load condition of the FBD_ST == FBDS_IDLE branch above): from the next clock on CLT_Q is CLT[DRAW_PAT.C], as
+	//the MLAB's asynchronous read gave, except that a write to that entry shows one clock later. The CLT is written
+	//only in CMDS_CLT_LOAD, before the command draws, and CLT_Q is only used for a pixel's FB_D while a draw write is
+	//pending (FBD_ST FBDS_WRITE); with VDP1_FB_EXT, CMDS_END waits until no pixel is pending before the next command
+	//is read, so no write to the table can fall on the clock before a use.
+	wire         DRAW_PAT_LD = FBD_ST == FBDS_IDLE && !CPU_VRAM_BUSY && (SPR_DATA_READY || CMD.CMDCTRL.COMM >= 4'h4) &&
+	                           (CMD_ST == CMDS_NSPR_DRAW || CMD_ST == CMDS_SSPR_DRAW || CMD_ST == CMDS_LINE_DRAW) &&
+	                           !(TEXT_X_READ_STEP && EC_FIND && IS_PAT_EC);
+	wire [ 3: 0] CLT_RA = DRAW_PAT_LD ? PAT.C[3:0] : DRAW_PAT.C[3:0];
+	VDP1_COL_TBL_M10K CLT(.CLK(CLK), .WRADDR(CMD_POS), .DATA(CMD_DAT), .WREN(CLT_WE), .RDADDR(CLT_RA), .Q(CLT_Q));
+`else
 	wire [ 3: 0] CLT_RA = DRAW_PAT.C[3:0];
 	VDP1_COL_TBL CLT(.CLK(CLK), .WRADDR(CMD_POS), .DATA(CMD_DAT), .WREN(CLT_WE), .RDADDR(CLT_RA), .Q(CLT_Q));
+`endif
 	assign CLT_READ_DONE = (VRAM_ST == VS_CLT_READ) && VRAM_RDY && (VRAM_READ_POS == 4'd15);
 	
 	assign GRD_READ_DONE = (VRAM_ST == VS_GRD_READ) && VRAM_RDY && (VRAM_READ_POS == 4'd3);
@@ -2626,6 +2695,14 @@ module VDP1_PAT_FIFO #(parameter l = 1) (
 	bit  [l-1: 0] WADDR;
 	bit  [l: 0] AMOUNT;
 	bit         NULL;
+`ifdef FRESH_VCM_PATFIFO
+	//FRESH_VCM_PATFIFO (s4 V5 "patfifo"): the two words in flip-flops (an MLAB for 2 x 16 bits takes a whole LAB):
+	//written on WRREQ as the MLAB was (also when full), read asynchronously
+	(* ramstyle = "logic" *) bit  [15: 0] MEM[2**l];
+	always @(posedge CLK) begin
+		if (WRREQ) MEM[WADDR] <= DATA;
+	end
+`endif
 	always @(posedge CLK) begin
 		if (RST) begin
 			AMOUNT <= '0;
@@ -2652,6 +2729,9 @@ module VDP1_PAT_FIFO #(parameter l = 1) (
 	assign EMPTY = ~|AMOUNT;
 	assign FULL = AMOUNT[l];
 	
+`ifdef FRESH_VCM_PATFIFO
+	assign sub_wire0 = MEM[RADDR];
+`else
 	altdpram	altdpram_component (
 				.data (DATA),
 				.inclock (CLK),
@@ -2686,6 +2766,7 @@ module VDP1_PAT_FIFO #(parameter l = 1) (
 		altdpram_component.wraddress_reg = "INCLOCK",
 		altdpram_component.wrcontrol_aclr = "OFF",
 		altdpram_component.wrcontrol_reg = "INCLOCK";
+`endif
 		
 	assign Q = NULL ? '0 : sub_wire0;
 
@@ -2741,6 +2822,67 @@ module VDP1_COL_TBL (
 
 endmodule
 
+`ifdef FRESH_VCM_GDSP
+//FRESH_VCM_GDSP: a 17-bit accumulator in a DSP block: Q <= (ACC ? Q : 0) + AX*AY + BX*(ST ? (DIR ? -1 : 1) : 0),
+//the low 17 bits (AX, AY, BX unsigned). In Verilator the same as a behavioural model (the cyclonev_mac model is
+//encrypted); for Quartus a cyclonev_mac in its "18 x 18 sum of two" mode with the accumulator, no input registers
+//(the operands and ACC act in the same clock), the output register as the accumulator.
+module VDP1_GACC (
+	input         CLK,
+	input  [17:0] AX,
+	input  [17:0] AY,
+	input  [17:0] BX,
+	input         ST,
+	input         DIR,
+	input         ACC,
+	output [16:0] Q
+);
+	wire [17:0] BY = {{17{ST & DIR}},ST};
+`ifdef VERILATOR
+	bit [37:0] R;
+	always @(posedge CLK) begin
+		bit signed [63:0] S;
+		S = $signed({46'b0,AX}) * $signed({46'b0,AY}) + $signed({{46{BY[17]}},BY}) * $signed({46'b0,BX});
+		R <= (ACC ? R : 38'd0) + S[37:0];
+	end
+	assign Q = R[16:0];
+`else
+	wire [37:0] R;
+	cyclonev_mac #(
+		.ax_width(18), .ay_scan_in_width(18), .bx_width(18), .by_width(18), .result_a_width(38),
+		.operation_mode("m18x18_sumof2"),
+		.signed_max("false"), .signed_may("false"), .signed_mbx("false"), .signed_mby("true"),
+		.ax_clock("none"), .ay_scan_in_clock("none"), .bx_clock("none"), .by_clock("none"),
+		.accumulate_clock("none"), .load_const_clock("none"), .negate_clock("none"), .sub_clock("none"),
+		.output_clock("0"), .use_chainadder("false"), .enable_double_accum("false")
+	) mac (
+		.ax(AX), .ay(AY), .bx(BX), .by(BY), .accumulate(ACC), .loadconst(1'b0), .negate(1'b0), .sub(1'b0),
+		.clk({2'b00,CLK}), .ena(3'b111), .aclr(2'b00), .resulta(R)
+	);
+	assign Q = R[16:0];
+`endif
+endmodule
+
+`endif
+`ifdef FRESH_VCM_CLT
+//FRESH_VCM_CLT: the colour look-up table as a 16 x 16 M10K: the read address is registered on every clock, the word is
+//read there (old data on a write to the same word in the same clock)
+module VDP1_COL_TBL_M10K (
+	input         CLK,
+	input	  [3:0] WRADDR,
+	input	 [15:0] DATA,
+	input	        WREN,
+	input	  [3:0] RDADDR,
+	output reg [15:0] Q
+);
+	(* ramstyle = "M10K" *) bit [15:0] ram[16];
+	always @(posedge CLK) begin
+		if (WREN) ram[WRADDR] <= DATA;
+		Q <= ram[RDADDR];
+	end
+endmodule
+
+`endif
 module VDP1_DIV_24_12 
 (
 	input         CLK,

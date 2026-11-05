@@ -807,6 +807,33 @@ set_global_assignment -name VERILOG_MACRO "FB0_PSRAM=1"
 set_global_assignment -name VERILOG_MACRO "A6_DBG=1"
 set_global_assignment -name VERILOG_MACRO "A7_FIX=1"
 set_global_assignment -name VERILOG_MACRO "A7D_VSIG=1"
+set_global_assignment -name VERILOG_MACRO "A8_TRIM=1"
+set_global_assignment -name VERILOG_MACRO "A8_RHC=1"
+set_global_assignment -name VERILOG_MACRO "A8_RHC_SL=8"
+set_global_assignment -name VERILOG_MACRO "A8_RHC_NOPF=1"
+# fresh-eyes candidate 1: every verified exact item (work/fresh/REPORT.txt)
+set_global_assignment -name VERILOG_MACRO "FRESH_WRQ_LENRAM=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_SDRAM1_DIN=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_FBRDY=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VBUSY=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_TAGPACK=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_FBQ_RDATA=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VDP2_RING2=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VDP2_NDCM=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VDP2_CDCM=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VDP2_RMAPM=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VDP2_BGR=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VDP2_RPST=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_SS_LANE=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_SS_MLAB=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VCM_GDSP=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VCM_REGM10K=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VCM_CLT=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VCM_PATFIFO=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VCM_UADDR2=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_VCM_UROM2=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_SH2_REGM10K=1"
+set_global_assignment -name VERILOG_MACRO "FRESH_SH2_TAGPACK=1"
 # I/O cell registers for the memory buses (glue/REPORT 10: PSRAM / SRAM outputs are plain registers in psram_phy /
 # fb_sram; read data are sampled every clk_ram by psram_phy (dq_s) and on fb_sram's third clk)
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to cram0_a[*]
@@ -841,8 +868,5 @@ set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to sram_ub_n
 set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to sram_lb_n
 set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to sram_dq[*]
 set_instance_assignment -name FAST_INPUT_REGISTER ON -to sram_dq[*]
-# Fitter seed: with this source and Quartus Prime Lite 25.1, seed 19 meets setup and hold at all four timing corners
-# (release 0.1). Another Quartus version or a source change may need another seed.
-
-set_global_assignment -name NUM_PARALLEL_PROCESSORS 1
-set_global_assignment -name SEED 19
+# (the build script appends NUM_PARALLEL_PROCESSORS and SEED)
+set_global_assignment -name SEED 6

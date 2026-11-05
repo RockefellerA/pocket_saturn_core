@@ -205,6 +205,10 @@ module vdp1fb_ext #(
 
 	// queues (0 = SRAM, 1 = PSRAM)
 	logic        q_valid [2], q_we [2], q_full [2], q_empty [2], q_ovf [2];
+`ifdef FRESH_FBRDY
+	logic        q_full_n [2];         // (FRESH_FBRDY) the queues' full one clk ahead
+	logic        rdy_r [2] = '{1'b1, 1'b1};   // (FRESH_FBRDY) FB_RDY for FB_SEL = 1 (queue 0 is the draw buffer's) / 0
+`endif
 	logic  [3:0] q_cnt   [2];
 	logic [16:0] q_addr  [2];
 	logic  [4:0] q_len   [2];
@@ -232,13 +236,30 @@ module vdp1fb_ext #(
 	// flow control, always find room) and waits while an erase write goes in
 	wire pf_push = fl_on[pf_sel] && hl_line[pf_sel] == want[pf_sel] && !c_fbv_vb && c_sel == sel_old &&
 	               q_cnt[pf_mem] <= 4'd1 && !(e_we && !mdraw == pf_mem) && !((d_we || d_rd) && mdraw == pf_mem);
+`ifdef FRESH_FBQ_RDATA
+	// (FRESH_FBQ_RDATA) the queue reads req_data in the clk after the request: the data source of the last request to
+	// each queue is kept (1 = the draw / CPU write's FBD_D, 0 = the erase write's FBE_D) and the data are not copied
+	logic        q_dsel [2];
+	always_ff @(posedge clk_ram) for (int m = 0; m < 2; m++) q_dsel[m] <= (d_we || d_rd) && mdraw == m;
+`endif
 	always_comb begin
 		for (int m = 0; m < 2; m++) begin
 			q_valid[m] = 1'b0; q_we[m] = 1'b0; q_addr[m] = '0; q_len[m] = '0; q_data[m] = '0; q_be[m] = '0; q_tag[m] = '0;
+`ifdef FRESH_FBQ_RDATA
+			q_data[m] = q_dsel[m] ? FBD_D : FBE_D;
+`endif
 			if ((d_we || d_rd) && mdraw == m) begin
+`ifdef FRESH_FBQ_RDATA
+				q_valid[m] = 1'b1; q_we[m] = d_we; q_addr[m] = c_fbd_a; q_be[m] = c_fbd_we;
+`else
 				q_valid[m] = 1'b1; q_we[m] = d_we; q_addr[m] = c_fbd_a; q_data[m] = FBD_D; q_be[m] = c_fbd_we;
+`endif
 			end else if (e_we && !mdraw == m) begin
+`ifdef FRESH_FBQ_RDATA
+				q_valid[m] = 1'b1; q_we[m] = 1'b1; q_addr[m] = c_fbv_a; q_be[m] = 2'b11;
+`else
 				q_valid[m] = 1'b1; q_we[m] = 1'b1; q_addr[m] = c_fbv_a; q_data[m] = FBE_D; q_be[m] = 2'b11;
+`endif
 			end else begin
 				// (A2) the prefetch burst's fields whenever neither a draw access nor an erase write goes to this queue;
 				// only q_valid needs pf_push (the queue registers the fields every clk and uses them only with a
@@ -282,7 +303,21 @@ module vdp1fb_ext #(
 	end
 	// (A2) also low while a read request sits in the capture register (it is pending from the next clk_ram on); the
 	// queue is the one of the core's current draw buffer (FB_SEL), where its next request goes
+`ifdef FRESH_FBRDY
+	// (FRESH_FBRDY, work/fresh/glue, 2026-11-04; timing, exact) FB_RDY from registers: rdy_r[m] is loaded at every edge
+	// with the value !rd_pend && !d_rd && !q_full[m] takes after it (the next values of rd_pend (above: cleared by a
+	// draw / CPU read response, set by d_rd, reset by q_rst), of d_rd (c_fbd_rd <= FBD_RD, rd_old <= c_fbd_rd) and of
+	// the queue's full (fb_queue full_n)); FB_SEL picks the draw buffer's queue as before. The path from the queue's
+	// counters through the full compare and the FB_RDY terms into the VDP1 (the worst path of the fitted build,
+	// clk_ram -> clk_sys) now starts at a register.
+	wire  d_rd_n    = FBD_RD && !c_fbd_rd;
+	wire  rsp_rd    = (r_valid[0] && !r_tag[0][TW-1]) || (r_valid[1] && !r_tag[1][TW-1]);
+	wire  rd_pend_n = !q_rst && !rsp_rd && (d_rd || rd_pend);
+	always_ff @(posedge clk_ram) for (int m = 0; m < 2; m++) rdy_r[m] <= !rd_pend_n && !d_rd_n && !q_full_n[m];
+	assign FB_RDY = FB_SEL ? rdy_r[0] : rdy_r[1];
+`else
 	assign FB_RDY = !rd_pend && !d_rd && !q_full[!FB_SEL];
+`endif
 	assign overflow = q_ovf[0] | q_ovf[1];
 	assign idle     = q_empty[0] & q_empty[1];
 
@@ -322,6 +357,9 @@ module vdp1fb_ext #(
 `endif
 			.req_be(q_be[m]), .req_tag(q_tag[m]), .full(q_full[m]), .empty(q_empty[m]), .cmd_count(q_cnt[m]),
 			.overflow(q_ovf[m]),
+`ifdef FRESH_FBRDY
+			.full_n(q_full_n[m]),
+`endif
 			.m_valid(m_valid[m]), .m_ready(m_ready[m]), .m_we(m_we[m]), .m_addr(m_addr[m]), .m_len(m_len[m]),
 			.m_wd_pop(m_pop[m]), .m_wd_data(m_wd[m]), .m_wd_be(m_wbe[m]),
 			.m_rd_valid(m_rv[m]), .m_rd_data(m_rd[m]), .m_rd_last(m_rl[m]),

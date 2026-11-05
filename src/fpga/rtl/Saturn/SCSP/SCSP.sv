@@ -367,11 +367,26 @@ module SCSP (
 	// so the registered address always equals SLOT, as the MLAB's unregistered one did. KEY_RAM_Q is used on SLOT1_CE,
 	// and is only written on SLOT1_CE, never on the edge before.
 	wire [ 4:0] SLOT_NEXT = !RST_N ? SLOT : !RES_N ? 5'd0 : SLOT1_CE ? SLOT + 5'd1 : SLOT;
+`ifdef FRESH_SS_LANE
+	// FRESH_SS_LANE: KEY (2 bits) and LFO (18 bits) as lanes of one M10K: both are written at OP2.SLOT on SLOT1_CE.
+	// Read address: LFO_RA in CYCLE_NUM[2:1] 00/01/10 (LFO_RAM_Q is loaded at the CYCLE0_CE of 00 and 10, with SLOT /
+	// OP4.SLOT) and SLOT_NEXT in 11 (KEY_RAM_Q is used at SLOT1_CE only, the CYCLE1_CE of 11; in 00/01 LFO_RA = SLOT =
+	// SLOT_NEXT, the address KEY_RAM had). The phase changes at a CYCLE1_CE edge, at least a clock before the next
+	// CYCLE0_CE registers its address (CLK_DIV toggles at every CE), so each use reads the word the separate RAMs read.
+	bit  [17:0] LFO_RAM_D;
+	bit  [17:0] LFO_RAM_Q;
+	wire [ 4:0] KEYLFO_RA = CYCLE_NUM[2:1] == 2'b11 ? SLOT_NEXT : LFO_RA;
+	wire [19:0] KEYLFO_RAM_Q;
+	SCSP_LANE_RAM #(5, 20, 1) KEYLFO_RAM(CLK, OP2.SLOT, {KEY_RAM_D,LFO_RAM_D}, SLOT1_CE, KEYLFO_RA, KEYLFO_RAM_Q);
+	assign KEY_RAM_Q = KEYLFO_RAM_Q[19:18];
+	assign LFO_RAM_Q = KEYLFO_RAM_Q[17:0];
+`else
 	SCSP_KEY_RAM KEY_RAM(CLK, OP2.SLOT, KEY_RAM_D, SLOT1_CE, SLOT_NEXT, KEY_RAM_Q);
 	
 	bit  [17:0] LFO_RAM_D;
 	bit  [17:0] LFO_RAM_Q;
 	SCSP_LFO_RAM LFO_RAM(CLK, OP2.SLOT, LFO_RAM_D, SLOT1_CE, LFO_RA, LFO_RAM_Q);
+`endif
 	
 	//Operation 2: MD read, ADP
 	SCR0_t       OP2_SCR0;
@@ -601,6 +616,18 @@ module SCSP (
 			end
 		end
 	end
+`ifdef FRESH_SS_LANE
+	// FRESH_SS_LANE: SO (19 bits) and PHASE_FRAC (14 bits) as lanes of one M10K: the same write (OP3.SLOT, SLOT1_CE)
+	// and read (OP2.SLOT) addresses.
+	bit [18:0] SO_RAM_D;
+	bit [18:0] SO_RAM_Q;
+	bit  [13:0] PHASE_FRAC_RAM_D;
+	bit  [13:0] PHASE_FRAC_RAM_Q;
+	wire [32:0] SOPH_RAM_Q;
+	SCSP_LANE_RAM #(5, 33, 1) SOPH_RAM(CLK, OP3.SLOT, {PHASE_FRAC_RAM_D,SO_RAM_D}, SLOT1_CE, OP2.SLOT, SOPH_RAM_Q);
+	assign SO_RAM_Q = SOPH_RAM_Q[18:0];
+	assign PHASE_FRAC_RAM_Q = SOPH_RAM_Q[32:19];
+`else
 	bit [18:0] SO_RAM_D;
 	bit [18:0] SO_RAM_Q;
 	SCSP_SO_RAM SO_RAM(CLK, OP3.SLOT, SO_RAM_D, SLOT1_CE, OP2.SLOT, SO_RAM_Q);
@@ -608,6 +635,7 @@ module SCSP (
 	bit  [13:0] PHASE_FRAC_RAM_D;
 	bit  [13:0] PHASE_FRAC_RAM_Q;
 	SCSP_PHASE_RAM PHASE_FRAC_RAM(CLK, OP3.SLOT, PHASE_FRAC_RAM_D, SLOT1_CE, OP2.SLOT, PHASE_FRAC_RAM_Q);
+`endif
 	
 	//Operation 3:  
 	SCR0_t       OP3_SCR0;
@@ -2101,6 +2129,64 @@ module SCSP (
 	bit [15:0] SCR_SCR0_Q;
 	SCSP_RAM_8X2 #(5) SCR_SCR0(CLK, OP2.RST ? OP2.SLOT : REG_A[9:5], OP2.RST ? '0 : REG_D & SCR0_MASK, OP2.RST ? 2'b11 : (REG_WE & {2{SCR_SCR0_SEL}} & {2{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : SCR0_RA ), SCR_SCR0_Q);
 	
+`ifdef FRESH_SS_LANE
+	// FRESH_SS_LANE: slot registers that share their write address (the CPU's REG_A[9:5], or the slot of the same
+	// reset-clearing pipeline stage) and their read address are lanes of one 32x32 M10K (two 16-bit registers, four
+	// byte enables). Every port expression is the one the two separate RAMs had, so each lane holds and reads what
+	// its RAM did:
+	//  - SA + LSA and LEA + SCR4: stage OP2, read at OP2.SLOT (SA_RA is OP2.SLOT in both phases);
+	//  - SCR5 + SCR6: stage OP1 (RST / SLOT), read at SCR5_RA (= SCR6_RA);
+	//  - SCR7 + SCR8: stage OP7, read at OP7.SLOT;
+	//  - SCR1 + SCR2: stage OP4, read at SCR2_RA (OP2.SLOT in CYCLE_NUM[2:1] 0x, OP4.SLOT in 1x). SCR1 was read at
+	//    OP4.SLOT in every phase, but OP4_SCR1 (loaded from it at every CYCLE0_CE) is only used at SLOT1_CE (the EG rate
+	//    terms RATE / EFF_RATE / ENV_STEP / SRAC feed VOL_CALC, NEW_EST and OP5.EVOL in the SLOT1_CE branch; the DEBUG
+	//    output aside), after the CYCLE0_CE loads of phases 10 and 11, which read OP4.SLOT as before. The REG_RD read
+	//    address (a CPU register read) is the same mux as before on both lanes.
+	wire       SCR_SA_SEL   = SCR_SEL & (REG_A[4:1] == 5'h02>>1);
+	wire       SCR_LSA_SEL  = SCR_SEL & (REG_A[4:1] == 5'h04>>1);
+	wire       SCR_LEA_SEL  = SCR_SEL & (REG_A[4:1] == 5'h06>>1);
+	wire       SCR_SCR1_SEL = SCR_SEL & (REG_A[4:1] == 5'h08>>1);
+	wire       SCR_SCR2_SEL = SCR_SEL & (REG_A[4:1] == 5'h0A>>1);
+	wire       SCR_SCR3_SEL = SCR_SEL & (REG_A[4:1] == 5'h0C>>1);
+	wire       SCR_SCR4_SEL = SCR_SEL & (REG_A[4:1] == 5'h0E>>1);
+	wire       SCR_SCR5_SEL = SCR_SEL & (REG_A[4:1] == 5'h10>>1);
+	wire       SCR_SCR6_SEL = SCR_SEL & (REG_A[4:1] == 5'h12>>1);
+	wire       SCR_SCR7_SEL = SCR_SEL & (REG_A[4:1] == 5'h14>>1);
+	wire       SCR_SCR8_SEL = SCR_SEL & (REG_A[4:1] == 5'h16>>1);
+	bit [15:0] SCR_SA_Q;
+	bit [15:0] SCR_LSA_Q;
+	bit [15:0] SCR_LEA_Q;
+	bit [15:0] SCR_SCR1_Q;
+	bit [15:0] SCR_SCR2_Q;
+	bit [15:0] SCR_SCR3_Q;
+	bit [15:0] SCR_SCR4_Q;
+	bit [15:0] SCR_SCR5_Q;
+	bit [15:0] SCR_SCR6_Q;
+	bit [15:0] SCR_SCR7_Q;
+	bit [15:0] SCR_SCR8_Q;
+	wire [31:0] SCR_SALSA_Q, SCR_LEA4_Q, SCR_12_Q, SCR_56_Q, SCR_78_Q;
+	SCSP_LANE_RAM #(5, 32, 4) SCR_SALSA(CLK, OP2.RST ? OP2.SLOT : REG_A[9:5], OP2.RST ? '0 : {REG_D & LSA_MASK, REG_D & SA_MASK},
+		OP2.RST ? 4'b1111 : ({REG_WE & {2{SCR_LSA_SEL}}, REG_WE & {2{SCR_SA_SEL}}} & {4{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : OP2.SLOT), SCR_SALSA_Q);
+	SCSP_LANE_RAM #(5, 32, 4) SCR_LEA4 (CLK, OP2.RST ? OP2.SLOT : REG_A[9:5], OP2.RST ? '0 : {REG_D & SCR4_MASK, REG_D & LEA_MASK},
+		OP2.RST ? 4'b1111 : ({REG_WE & {2{SCR_SCR4_SEL}}, REG_WE & {2{SCR_LEA_SEL}}} & {4{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : OP2.SLOT), SCR_LEA4_Q);
+	SCSP_LANE_RAM #(5, 32, 4) SCR_12   (CLK, OP4.RST ? OP4.SLOT : REG_A[9:5], OP4.RST ? '0 : {REG_D & SCR2_MASK, REG_D & SCR1_MASK},
+		OP4.RST ? 4'b1111 : ({REG_WE & {2{SCR_SCR2_SEL}}, REG_WE & {2{SCR_SCR1_SEL}}} & {4{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : SCR2_RA), SCR_12_Q);
+	SCSP_LANE_RAM #(5, 32, 4) SCR_56   (CLK,     RST ?     SLOT : REG_A[9:5],     RST ? '0 : {REG_D & SCR6_MASK, REG_D & SCR5_MASK},
+		    RST ? 4'b1111 : ({REG_WE & {2{SCR_SCR6_SEL}}, REG_WE & {2{SCR_SCR5_SEL}}} & {4{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : SCR5_RA), SCR_56_Q);
+	SCSP_LANE_RAM #(5, 32, 4) SCR_78   (CLK, OP7.RST ? OP7.SLOT : REG_A[9:5], OP7.RST ? '0 : {REG_D & SCR8_MASK, REG_D & SCR7_MASK},
+		OP7.RST ? 4'b1111 : ({REG_WE & {2{SCR_SCR8_SEL}}, REG_WE & {2{SCR_SCR7_SEL}}} & {4{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : OP7.SLOT), SCR_78_Q);
+	assign SCR_SA_Q   = SCR_SALSA_Q[15:0];
+	assign SCR_LSA_Q  = SCR_SALSA_Q[31:16];
+	assign SCR_LEA_Q  = SCR_LEA4_Q[15:0];
+	assign SCR_SCR4_Q = SCR_LEA4_Q[31:16];
+	assign SCR_SCR1_Q = SCR_12_Q[15:0];
+	assign SCR_SCR2_Q = SCR_12_Q[31:16];
+	assign SCR_SCR5_Q = SCR_56_Q[15:0];
+	assign SCR_SCR6_Q = SCR_56_Q[31:16];
+	assign SCR_SCR7_Q = SCR_78_Q[15:0];
+	assign SCR_SCR8_Q = SCR_78_Q[31:16];
+	SCSP_RAM_8X2 #(5) SCR_SCR3(CLK, OP6.RST ? OP6.SLOT : REG_A[9:5], OP6.RST ? '0 : REG_D & SCR3_MASK, OP6.RST ? 2'b11 : (REG_WE & {2{SCR_SCR3_SEL}} & {2{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : OP6.SLOT), SCR_SCR3_Q);
+`else
 	wire       SCR_SA_SEL   = SCR_SEL & (REG_A[4:1] == 5'h02>>1);
 	bit [15:0] SCR_SA_Q;
 	SCSP_RAM_8X2 #(5) SCR_SA  (CLK, OP2.RST ? OP2.SLOT : REG_A[9:5], OP2.RST ? '0 : REG_D & SA_MASK,   OP2.RST ? 2'b11 : (REG_WE & {2{SCR_SA_SEL}} & {2{CYCLE1_CE}})  , (REG_RD ? REG_A[9:5] : SA_RA   ), SCR_SA_Q);
@@ -2145,12 +2231,52 @@ module SCSP (
 	bit [15:0] SCR_SCR8_Q;
 	SCSP_RAM_8X2 #(5) SCR_SCR8(CLK, OP7.RST ? OP7.SLOT : REG_A[9:5], OP7.RST ? '0 : REG_D & SCR8_MASK, OP7.RST ? 2'b11 : (REG_WE & {2{SCR_SCR8_SEL}} & {2{CYCLE1_CE}}), (REG_RD ? REG_A[9:5] : OP7.SLOT), SCR_SCR8_Q);
 	
+`endif
 	//STACK,100600-10067F
 	wire       STACKA_SEL = REG_A[11:6] == 6'b011000;
 	wire       STACKB_SEL = REG_A[11:6] == 6'b011001;
 	bit [15:0] STACK0_Q,STACK1_Q;
+`ifdef FRESH_SS_MLAB
+	// FRESH_SS_MLAB: the two 32x16 stack MLABs as one 64x16 M10K (STACK1 at 32-63), read address registered on every
+	// rising edge. The MLABs' asynchronous read gave, in a clock, the word at that clock's read address; the M10K gives
+	// the word at the previous clock's address, so the address is given one clock early where it changes:
+	//  - SOUSX / SOUSY load at the CYCLE0_CE of phases 10 / 11 (clock C): STACK_RA is the same in C-1 and C (its
+	//    inputs CYCLE_NUM[2:1], OP2.SLOT, STACK_RGEN change at CYCLE1_CE edges, OP2_SCR4 at CYCLE0_CE edges, all at least
+	//    two clocks before C, as CLK_DIV toggles at every CE), REG_RD is 0 in both (a CPU register read sets REG_RD at
+	//    the end of the clock after a CYCLE0_CE and clears it at the next CYCLE1_CE, so it is low from the clock after
+	//    that CYCLE1_CE on), and no write lands on the edge between C-1 and C (writes land on CYCLE0_CE / CYCLE1_CE
+	//    edges only, and that edge is neither);
+	//  - a CPU read (REG_RD) loads REG_Q while REG_RD_DELAY, i.e. from two clocks after REG_RD rose, when the M10K
+	//    already shows the word at REG_A, up to the clock after the CYCLE1_CE that ends the read (DO / SCDO take REG_Q
+	//    at that CYCLE1_CE; the last load, with REG_RD low again, takes the word at the slot pipeline's STACK_RA[4:0]
+	//    from the bank REG_A[6] selects, which a later write access shows on DO / SCDO). So in that CYCLE1_CE clock the
+	//    port already takes the word address of the next clock, STACK_RA with the phase after the edge (STACK_RA_NEXT;
+	//    what else STACK_RA depends on changes at that edge only into phase 00, whose address is 0), and the bank bit
+	//    stays REG_A[6] while REG_RD is high.
+	// The pipeline write (STACK_WE, a CYCLE0_CE of phase 00) and the CPU write (CYCLE1_CE) never share an edge.
+	// The STACK0 / STACK1 output mux goes.
+	//  - a RES_N reset in clock C-1 clears STACK_RGEN, OP2.SLOT, OP2_SCR4 and REG_RD at its edge, so the address of clock
+	//    C is 0: the port takes 0 in a RES_N clock (the next CYCLE0_CE can be the very next edge). RST_N is asynchronous:
+	//    the registers it clears (not OP2_SCR4, whose RST_N clear is simulation-only) are already clear in the clock
+	//    where it is low, so STACK_RA_NEXT computed from them is the address of clock C.
+	bit  [ 5: 0] STACK_RA_NEXT;
+	always_comb begin
+		casex (CYCLE_NUM[2:1] + {1'b0,CYCLE1_CE})
+			2'b0x: STACK_RA_NEXT = '0;
+			2'b10: STACK_RA_NEXT = {STACK_RGEN,OP2.SLOT} + OP2_SCR4.MDXSL;
+			2'b11: STACK_RA_NEXT = {STACK_RGEN,OP2.SLOT} + OP2_SCR4.MDYSL;
+		endcase
+		if (!RES_N) STACK_RA_NEXT = '0;
+	end
+	wire [15:0] STACK_Q;
+	SCSP_LANE_RAM #(6, 16, 2) STACK (CLK, {STACK_WE ? STACK_WGEN : REG_A[6], STACK_WE ? OP7.SLOT : REG_A[5:1]}, (STACK_WE ? OP7.SD : REG_D),
+		({2{STACK_WE}}&{2{CYCLE0_CE}}) | (REG_WE & {2{STACKA_SEL|STACKB_SEL}} & {2{CYCLE1_CE}}), {REG_RD & RES_N ? REG_A[6] : STACK_RA_NEXT[5], REG_RD & ~CYCLE1_CE & RES_N ? REG_A[5:1] : STACK_RA_NEXT[4:0]}, STACK_Q);
+	assign STACK0_Q = STACK_Q;
+	assign STACK1_Q = STACK_Q;
+`else
 	SCSP_STACK_RAM STACK1 (CLK, (STACK_WE ? OP7.SLOT : REG_A[5:1]), (STACK_WE ? OP7.SD : REG_D), ({2{ STACK_WGEN&STACK_WE}}&{2{CYCLE0_CE}}) | (REG_WE & {2{STACKB_SEL}} & {2{CYCLE1_CE}}), (REG_RD ? REG_A[5:1] : STACK_RA[4:0]), STACK1_Q);
 	SCSP_STACK_RAM STACK0 (CLK, (STACK_WE ? OP7.SLOT : REG_A[5:1]), (STACK_WE ? OP7.SD : REG_D), ({2{~STACK_WGEN&STACK_WE}}&{2{CYCLE0_CE}}) | (REG_WE & {2{STACKA_SEL}} & {2{CYCLE1_CE}}), (REG_RD ? REG_A[5:1] : STACK_RA[4:0]), STACK0_Q);
+`endif
 	
 	//COEF,100700-10077F
 	wire       COEF_SEL = REG_A[11:7] == 5'b01110;
@@ -2170,7 +2296,25 @@ module SCSP (
 	wire       MPRO3_SEL = MPRO_SEL & (REG_A[2:1] == 3'h6>>1);
 	bit [63:0] MPRO_RAM_Q;
 	SCSP_MPRO_RAM MPRO_RAM (CLK, OP7.RST ? DSP_MPRO_STEP : REG_A[9:3], OP7.RST ? '0 : {4{REG_D}}, OP7.RST ? 8'hFF : ({4{REG_WE}} & {{2{MPRO0_SEL}},{2{MPRO1_SEL}},{2{MPRO2_SEL}},{2{MPRO3_SEL}}}), (REG_RD ? REG_A[9:3] : DSP_MPRO_STEP), MPRO_RAM_Q);
+`ifdef FRESH_SS_MLAB
+	// FRESH_SS_MLAB: the flags in one 8x16 true-dual-port M10K (SCSP_MPRO_SET_M10K) instead of two MLAB copies:
+	//  - the DSP side (port B) reads the step of the next clock (DSP_MPRO_STEP_NEXT: OP7.SLOT and CYCLE_NUM as they will
+	//    be after this edge), so in every clock it shows the current step's flag, as the asynchronous MLAB read did (the
+	//    same trick as SLOT_NEXT for KEY_RAM); a set and a DSP read of the same word on one edge: the MLAB copy showed
+	//    the new flag in the next clock, the M10K port does not (mixed-port read-during-write), and that clock's MPRO0_Q
+	//    is used only if the next CYCLE0_CE is the very next edge;
+	//  - the set side (port A) reads the word at REG_A[9:6] on every edge and writes it back with the new flag on SET
+	//    (a CYCLE1_CE with REG_WE). REG_A is loaded when the register access leaves MS_IDLE, the clock after a CYCLE0_CE,
+	//    and the SET comes at the next CYCLE1_CE or later: the word read is the right one when that CYCLE1_CE is at
+	//    least two clocks after that CYCLE0_CE.
+	// Both hold whenever CE is never high on two consecutive clocks (saturn_top: SCSP_CE = SCSP_2X_CE & SCSP_DIV, so
+	// CYCLE0_CE / CYCLE1_CE edges are >= 4 clocks apart), which the register read path already needs (DO / SCDO take
+	// REG_Q at the CYCLE1_CE that ends a read, two clocks after REG_RD rose at the earliest).
+	wire [ 6:0] DSP_MPRO_STEP_NEXT = {!RST_N || !RES_N ? OP7_RESET.SLOT : SLOT1_CE ? OP6.SLOT : OP7.SLOT, CYCLE_NUM[2:1] + {1'b0,CYCLE_NUM[0] & CLK_DIV & CE}};
+	SCSP_MPRO_SET_M10K MPRO_SET (CLK, RST_N, ~RES_N, RES_N && REG_WE && CYCLE1_CE && MPRO_SEL && REG_A[2:1] == 2'b11, REG_A[9:3], DSP_MPRO_STEP, DSP_MPRO_STEP_NEXT[6:4], DSP_MPRO_SET_Q);
+`else
 	SCSP_MPRO_SET MPRO_SET (CLK, RST_N, ~RES_N, RES_N && REG_WE && CYCLE1_CE && MPRO_SEL && REG_A[2:1] == 2'b11, REG_A[9:3], DSP_MPRO_STEP, DSP_MPRO_SET_Q);
+`endif
 	
 	//TEMP,100C00-100DFF
 	wire       TEMP_SEL = REG_A[11:9] == 3'b110;
@@ -3206,6 +3350,235 @@ module SCSP_MPRO_SET
 	assign Q = RD_WORD[RD_A[3:0]] & ~CLEARED[RD_A[6:4]];
 
 endmodule
+
+`ifdef FRESH_SS_LANE
+`define FRESH_SS_LANE_RAM
+`endif
+`ifdef FRESH_SS_MLAB
+`define FRESH_SS_LANE_RAM
+`endif
+`ifdef FRESH_SS_LANE_RAM
+// FRESH_SS_LANE / FRESH_SS_MLAB: one M10K (simple dual port, write on the rising edge, read address registered on the rising edge,
+// output unregistered) holding several of the SCSP's RAMs as lanes of one word, with a byte enable per lane where the
+// lanes are written separately (NBE enables of W/NBE bits).
+module SCSP_LANE_RAM #(parameter AW = 5, parameter W = 32, parameter NBE = 4) (
+	input           CLK,
+	input  [AW-1:0] WRADDR,
+	input   [W-1:0] DATA,
+	input [NBE-1:0] WREN,
+	input  [AW-1:0] RDADDR,
+	output  [W-1:0] Q
+);
+`ifdef SIM
+	localparam BW = W / NBE;
+	reg [W-1:0] MEM [2**AW];
+	reg [AW-1:0] RDADDR_R;
+	always @(posedge CLK) begin
+		for (int i = 0; i < NBE; i++) if (WREN[i]) MEM[WRADDR][i*BW +: BW] <= DATA[i*BW +: BW];
+		RDADDR_R <= RDADDR;
+	end
+	assign Q = MEM[RDADDR_R];
+`else
+	generate if (NBE == 1) begin : one
+	altsyncram	altsyncram_component1 (
+				.address_a (WRADDR),
+				.byteena_a (1'b1),
+				.clock0 (CLK),
+				.data_a (DATA),
+				.wren_a (WREN[0]),
+				.address_b (RDADDR),
+				.q_b (Q),
+				.aclr0 (1'b0),
+				.aclr1 (1'b0),
+				.addressstall_a (1'b0),
+				.addressstall_b (1'b0),
+				.byteena_b (1'b1),
+				.clock1 (1'b1),
+				.clocken0 (1'b1),
+				.clocken1 (1'b1),
+				.clocken2 (1'b1),
+				.clocken3 (1'b1),
+				.data_b ({W{1'b1}}),
+				.eccstatus (),
+				.q_a (),
+				.rden_a (1'b1),
+				.rden_b (1'b1),
+				.wren_b (1'b0));
+	defparam
+		altsyncram_component1.address_aclr_b = "NONE",
+		altsyncram_component1.address_reg_b = "CLOCK0",
+		altsyncram_component1.clock_enable_input_a = "BYPASS",
+		altsyncram_component1.clock_enable_input_b = "BYPASS",
+		altsyncram_component1.clock_enable_output_b = "BYPASS",
+		altsyncram_component1.intended_device_family = "Cyclone V",
+		altsyncram_component1.lpm_type = "altsyncram",
+		altsyncram_component1.numwords_a = 2**AW,
+		altsyncram_component1.numwords_b = 2**AW,
+		altsyncram_component1.operation_mode = "DUAL_PORT",
+		altsyncram_component1.outdata_aclr_b = "NONE",
+		altsyncram_component1.outdata_reg_b = "UNREGISTERED",
+		altsyncram_component1.power_up_uninitialized = "FALSE",
+		altsyncram_component1.ram_block_type = "M10K",
+		altsyncram_component1.read_during_write_mode_mixed_ports = "DONT_CARE",
+		altsyncram_component1.widthad_a = AW,
+		altsyncram_component1.widthad_b = AW,
+		altsyncram_component1.width_a = W,
+		altsyncram_component1.width_b = W,
+		altsyncram_component1.width_byteena_a = 1;
+	end else begin : lanes
+	altsyncram	altsyncram_component (
+				.address_a (WRADDR),
+				.byteena_a (WREN),
+				.clock0 (CLK),
+				.data_a (DATA),
+				.wren_a (|WREN),
+				.address_b (RDADDR),
+				.q_b (Q),
+				.aclr0 (1'b0),
+				.aclr1 (1'b0),
+				.addressstall_a (1'b0),
+				.addressstall_b (1'b0),
+				.byteena_b (1'b1),
+				.clock1 (1'b1),
+				.clocken0 (1'b1),
+				.clocken1 (1'b1),
+				.clocken2 (1'b1),
+				.clocken3 (1'b1),
+				.data_b ({W{1'b1}}),
+				.eccstatus (),
+				.q_a (),
+				.rden_a (1'b1),
+				.rden_b (1'b1),
+				.wren_b (1'b0));
+	defparam
+		altsyncram_component.address_aclr_b = "NONE",
+		altsyncram_component.address_reg_b = "CLOCK0",
+		altsyncram_component.byte_size = W / NBE,
+		altsyncram_component.clock_enable_input_a = "BYPASS",
+		altsyncram_component.clock_enable_input_b = "BYPASS",
+		altsyncram_component.clock_enable_output_b = "BYPASS",
+		altsyncram_component.intended_device_family = "Cyclone V",
+		altsyncram_component.lpm_type = "altsyncram",
+		altsyncram_component.numwords_a = 2**AW,
+		altsyncram_component.numwords_b = 2**AW,
+		altsyncram_component.operation_mode = "DUAL_PORT",
+		altsyncram_component.outdata_aclr_b = "NONE",
+		altsyncram_component.outdata_reg_b = "UNREGISTERED",
+		altsyncram_component.power_up_uninitialized = "FALSE",
+		altsyncram_component.ram_block_type = "M10K",
+		altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
+		altsyncram_component.widthad_a = AW,
+		altsyncram_component.widthad_b = AW,
+		altsyncram_component.width_a = W,
+		altsyncram_component.width_b = W,
+		altsyncram_component.width_byteena_a = NBE;
+	end endgenerate
+`endif
+endmodule
+`endif
+
+`ifdef FRESH_SS_MLAB
+// FRESH_SS_MLAB: SCSP_MPRO_SET with its flags in one true-dual-port M10K (8 words of 16 flags): port A reads the word
+// at SET_A[6:4] on every edge and writes the updated word there on SET; port B reads the word at RD_A_NEXT (the next
+// clock's RD_A[6:4]). CLEARED as before (the reset clear of all flags at once).
+module SCSP_MPRO_SET_M10K
+(
+	input          CLK,
+	input          RST_N,
+
+	input          CLR,
+	input          SET,
+	input  [ 6: 0] SET_A,
+	input  [ 6: 0] RD_A,
+	input  [ 2: 0] RD_A_NEXT,
+	output         Q
+);
+	reg  [ 7: 0] CLEARED;
+	wire [15: 0] QA, QB;
+	wire [15: 0] OLD = QA & {16{~CLEARED[SET_A[6:4]]}};
+	wire [15: 0] NEW = OLD | (16'h0001 << SET_A[3:0]);
+
+	always @(posedge CLK or negedge RST_N) begin
+		if (!RST_N) begin
+			CLEARED <= '1;
+		end else if (CLR) begin
+			CLEARED <= '1;
+		end else if (SET) begin
+			CLEARED[SET_A[6:4]] <= 0;
+		end
+	end
+
+`ifdef SIM
+	reg [15:0] FLAGS [8];
+	reg [ 2:0] RA_A, RA_B;
+	always @(posedge CLK) begin
+		if (SET) FLAGS[SET_A[6:4]] <= NEW;
+		RA_A <= SET_A[6:4];
+		RA_B <= RD_A_NEXT;
+	end
+	assign QA = FLAGS[RA_A];
+	assign QB = FLAGS[RA_B];
+`else
+	altsyncram	altsyncram_component (
+				.address_a (SET_A[6:4]),
+				.address_b (RD_A_NEXT),
+				.byteena_a (2'b11),
+				.byteena_b (2'b11),
+				.clock0 (CLK),
+				.data_a (NEW),
+				.data_b (16'h0000),
+				.wren_a (SET),
+				.wren_b (1'b0),
+				.q_a (QA),
+				.q_b (QB),
+				.aclr0 (1'b0),
+				.aclr1 (1'b0),
+				.addressstall_a (1'b0),
+				.addressstall_b (1'b0),
+				.clock1 (1'b1),
+				.clocken0 (1'b1),
+				.clocken1 (1'b1),
+				.clocken2 (1'b1),
+				.clocken3 (1'b1),
+				.eccstatus (),
+				.rden_a (1'b1),
+				.rden_b (1'b1));
+	defparam
+		altsyncram_component.address_reg_b = "CLOCK0",
+		altsyncram_component.byteena_reg_b = "CLOCK0",
+		altsyncram_component.byte_size = 8,
+		altsyncram_component.clock_enable_input_a = "BYPASS",
+		altsyncram_component.clock_enable_input_b = "BYPASS",
+		altsyncram_component.clock_enable_output_a = "BYPASS",
+		altsyncram_component.clock_enable_output_b = "BYPASS",
+		altsyncram_component.indata_reg_b = "CLOCK0",
+		altsyncram_component.intended_device_family = "Cyclone V",
+		altsyncram_component.lpm_type = "altsyncram",
+		altsyncram_component.numwords_a = 8,
+		altsyncram_component.numwords_b = 8,
+		altsyncram_component.operation_mode = "BIDIR_DUAL_PORT",
+		altsyncram_component.outdata_aclr_a = "NONE",
+		altsyncram_component.outdata_aclr_b = "NONE",
+		altsyncram_component.outdata_reg_a = "UNREGISTERED",
+		altsyncram_component.outdata_reg_b = "UNREGISTERED",
+		altsyncram_component.power_up_uninitialized = "FALSE",
+		altsyncram_component.ram_block_type = "M10K",
+		altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
+		altsyncram_component.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+		altsyncram_component.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
+		altsyncram_component.widthad_a = 3,
+		altsyncram_component.widthad_b = 3,
+		altsyncram_component.width_a = 16,
+		altsyncram_component.width_b = 16,
+		altsyncram_component.width_byteena_a = 2,
+		altsyncram_component.width_byteena_b = 2,
+		altsyncram_component.wrcontrol_wraddress_reg_b = "CLOCK0";
+`endif
+
+	assign Q = QB[RD_A[3:0]] & ~CLEARED[RD_A[6:4]];
+
+endmodule
+`endif
 
 module SCSP_MPRO_RAM
 (
