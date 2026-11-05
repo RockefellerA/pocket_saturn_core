@@ -27,6 +27,9 @@
 //                                                       A7_FIX: reset 1 = Off, interact.json defaultval 1)
 //   0x8000003C  W  PSRAM gap                            0 one PSRAM cycle, 1 two                  (reset 0 = one)
 //   outputs dbg_* = the clk_sys synchroniser's second stage (s1), as quasi-static as the other settings
+//   (A8, work/a8, with `define A8_TRIM: Timing and the four A6 settings leave the menu, interact.json ids 4 and 8-11;
+//   fast = 0 (Original) and dbg_* = the defaults (layout 0, write combining on, flags off, gap one) as constants, so
+//   synthesis removes the logic behind them; writes to 0x8000000C and 0x80000030-3C are ignored)
 // Derived as in MiSTer's emu: cart_type = Auto ? auto_cart : sel < 6 ? sel : 0; area_code from the region list
 // (Auto -> the auto register); PAL = area_code >= 0xA.
 // RTC: core_bridge_cmd's host command 0x0090 (rtc_valid rising, BCD date 0xYYYYMMDD / time 0x00HHMMSS) -> MiSTer's
@@ -86,7 +89,9 @@ module pk_settings (
 			6'h00: r_rst <= 17'h10000;
 			6'h01: r_cart <= v[2:0];
 			6'h02: r_region <= v[2:0];
+`ifndef A8_TRIM
 			6'h03: r_fast <= v[0];
+`endif
 			6'h04: r_blur <= v[0];
 			6'h05: r_bob <= v[0];
 			6'h06: r_pad <= v[1:0];
@@ -94,10 +99,12 @@ module pk_settings (
 			6'h09: r_acart <= v[2:0];
 			6'h0A: r_dz <= v[0];
 `ifdef A6_DBG
+`ifndef A8_TRIM
 			6'h0C: r_lay <= v[1:0];
 			6'h0D: r_wcoff <= v[0];
 			6'h0E: r_flgoff <= v[0];
 			6'h0F: r_gap2 <= v[0];
+`endif
 `endif
 			default: ;
 		endcase
@@ -134,10 +141,17 @@ module pk_settings (
 		s0 <= {r_lay, r_wcoff, r_flgoff, r_gap2, r_rst[16], r_region, r_cart, r_fast, r_blur, r_bob, r_pad, r_aarea, r_acart, r_dz};
 		s1 <= s0;
 	end
+`ifdef A8_TRIM
+	assign dbg_layout = 2'd0;                // (A8) the defaults as constants
+	assign dbg_wcoff  = 1'b0;
+	assign dbg_flgoff = 1'b1;
+	assign dbg_gap2   = 1'b0;
+`else
 	assign dbg_layout = s1[24:23];
 	assign dbg_wcoff  = s1[22];
 	assign dbg_flgoff = s1[21];
 	assign dbg_gap2   = s1[20];
+`endif
 `else
 	localparam [19:0] S_INIT = {1'b0, 3'd7, 3'd0, 1'b0, 1'b0, 1'b0, 2'd0, 4'h4, 3'd0, 1'b0};
 	reg [19:0] s0 = S_INIT, s1 = S_INIT;
@@ -150,7 +164,11 @@ module pk_settings (
 	wire [3:0] s_aarea = s1[7:4];
 	assign usr_reset = s1[19];
 	always @(posedge clk_sys) begin
+`ifdef A8_TRIM
+		fast   <= 1'b0;                        // (A8) Timing = Original
+`else
 		fast   <= s1[12];
+`endif
 		blur   <= s1[11];
 		bob    <= s1[10];
 		padmap <= s1[9:8];

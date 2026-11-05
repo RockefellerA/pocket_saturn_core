@@ -813,6 +813,31 @@ module VDP2 (
 	// register, so its readers see no change) loads the word written three such edges earlier (slot VAD_W - 3, read on
 	// every clock: a step lasts 8 clk_sys, so the word is in the RAM's output register long before the next DOT_CE_R
 	// edge; slot VAD_W - 3 is never the slot written at that edge). Power-up: RAM, pointer and pipeline all 0.
+`ifdef FRESH_VDP2_RING2
+	// FRESH_VDP2_RING2: the same ring in two M10K halves of at most 40 read bits each (one 256x40 block each) instead of
+	// one 78-bit inferred RAM, which Quartus builds from three blocks. Half A = NBG0/NBG1 coordinates (38 bits read),
+	// half B = NBG2/NBG3 and RBG coordinates. Same slots, same edges, same read address: the word is identical.
+	(* ramstyle = "M10K, no_rw_check" *) bit [43:0] VAD_RAMA[4];
+	(* ramstyle = "M10K, no_rw_check" *) bit [107:0] VAD_RAMB[4];
+	bit   [1:0] VAD_W = 2'd0;
+	bit  [43:0] VAD_QA = '0;
+	bit [107:0] VAD_QB = '0;
+	wire [151:0] VAD_D = {VA_PIPE[0].NxX[3], VA_PIPE[0].NxX[2], VA_PIPE[0].NxX[1], VA_PIPE[0].NxX[0],
+	                      VA_PIPE[0].NxY[3], VA_PIPE[0].NxY[2], VA_PIPE[0].NxY[1], VA_PIPE[0].NxY[0],
+	                      VA_PIPE[0].RxX[1], VA_PIPE[0].RxX[0], VA_PIPE[0].RxY[1], VA_PIPE[0].RxY[0]};
+	wire [43:0] VAD_DA = {VAD_D[129:108], VAD_D[85:64]};
+	wire [107:0] VAD_DB = {VAD_D[151:130], VAD_D[107:86], VAD_D[63:0]};
+	wire [151:0] VAD_Q = {VAD_QB[107:86], VAD_QA[43:22], VAD_QB[85:64], VAD_QA[21:0], VAD_QB[63:0]};
+	always @(posedge CLK) begin
+		if (RST_N && DOT_CE_R) begin
+			VAD_RAMA[VAD_W] <= VAD_DA;
+			VAD_RAMB[VAD_W] <= VAD_DB;
+			VAD_W <= VAD_W + 2'd1;
+		end
+		VAD_QA <= VAD_RAMA[VAD_W + 2'd1];		//slot VAD_W - 3
+		VAD_QB <= VAD_RAMB[VAD_W + 2'd1];
+	end
+`else
 	(* ramstyle = "M10K, no_rw_check" *) bit [151:0] VAD_RAM[4];
 	bit   [1:0] VAD_W = 2'd0;
 	bit [151:0] VAD_Q = '0;
@@ -826,6 +851,7 @@ module VDP2 (
 		end
 		VAD_Q <= VAD_RAM[VAD_W + 2'd1];		//slot VAD_W - 3
 	end
+`endif
 	always @(posedge CLK or negedge RST_N) begin
 		VRAMAccessState_t VA4_D;
 		
@@ -941,13 +967,39 @@ module VDP2 (
 		RBG_B1VA.Rx = VA_PIPE[0].RxB1PN[1] | VA_PIPE[0].RxB1CH[1] | VA_PIPE[0].RxB1CT[1];
 	end
 	
+`ifdef FRESH_VDP2_DSPADD
+	// FRESH_VDP2_DSPADD: NxOFFY = NMOSY + NVCSY (19 bits, 2 layers) as a1 * 1 + a0 * 1 in one 18x19 sum-of-two DSP block
+	// each (signed 19 x 2, unregistered): the low 19 bits of the sum are the same modular sum the adder gave.
+	wire [21:0] DSPY_R[2];
+	altmult_add #(.number_of_multipliers(2), .width_a(19), .width_b(2), .width_result(22),
+	              .representation_a("SIGNED"), .representation_b("SIGNED"), .multiplier1_direction("ADD"),
+	              .input_register_a0("UNREGISTERED"), .input_register_a1("UNREGISTERED"),
+	              .input_register_b0("UNREGISTERED"), .input_register_b1("UNREGISTERED"),
+	              .multiplier_register0("UNREGISTERED"), .multiplier_register1("UNREGISTERED"),
+	              .output_register("UNREGISTERED"), .dedicated_multiplier_circuitry("YES"),
+	              .intended_device_family("Cyclone V"), .lpm_type("altmult_add"))
+		dspy0 (.dataa({NVCSY[0], NMOSY[0]}), .datab({2'b01, 2'b01}), .result(DSPY_R[0]));
+	altmult_add #(.number_of_multipliers(2), .width_a(19), .width_b(2), .width_result(22),
+	              .representation_a("SIGNED"), .representation_b("SIGNED"), .multiplier1_direction("ADD"),
+	              .input_register_a0("UNREGISTERED"), .input_register_a1("UNREGISTERED"),
+	              .input_register_b0("UNREGISTERED"), .input_register_b1("UNREGISTERED"),
+	              .multiplier_register0("UNREGISTERED"), .multiplier_register1("UNREGISTERED"),
+	              .output_register("UNREGISTERED"), .dedicated_multiplier_circuitry("YES"),
+	              .intended_device_family("Cyclone V"), .lpm_type("altmult_add"))
+		dspy1 (.dataa({NVCSY[1], NMOSY[1]}), .datab({2'b01, 2'b01}), .result(DSPY_R[1]));
+`endif
 	always_comb begin
 		NxOFFX[0] = NXO[0];	//NXO = NX + NSX (S4CHECK_NXO)
 		NxOFFX[1] = NXO[1];
 		NxOFFX[2] = NXO[2];
 		NxOFFX[3] = NXO[3];
+`ifdef FRESH_VDP2_DSPADD
+		NxOFFY[0] = DSPY_R[0][18:0];	//NMOSY + NVCSY in a DSP block (sum of two 19x2 products with 1), low 19 bits = the modular sum
+		NxOFFY[1] = DSPY_R[1][18:0];
+`else
 		NxOFFY[0] = NMOSY[0] + NVCSY[0];
 		NxOFFY[1] = NMOSY[1] + NVCSY[1];
+`endif
 		NxOFFY[2] = NMOSY[2];
 		NxOFFY[3] = NMOSY[3];
 	end
@@ -1002,8 +1054,41 @@ module VDP2 (
 	wire [ 3: 0] RMAP_RA0 = {VA_PIPE[0].R0RP,RMAP_IDX0[3:1]};
 	wire [ 3: 0] RMAP_RA1 = {1'b1,RMAP_IDX1[3:1]};
 	wire [11: 0] RMAP_Q0, RMAP_Q1;
+`ifdef FRESH_VDP2_RMAPM
+	// FRESH_VDP2_RMAPM: the two map copies in M10Ks with a synchronous read. The map word is consumed at the dot edges
+	// only (DOT_CE_F: the VRAM address; DOT_CE_R: RBG_PIPE[0]); its address depends on registers that change at those
+	// edges (RxX / RxY, R0RPMSB, R0RP_PIPE) and on RPMD / PLSZ, which the CPU can write on any clock: the address is
+	// formed from their next-state (write-through) values, so the word registered in the clock before an edge is the
+	// one the asynchronous read gave during that clock. A CPU write landing on the same edge as the read registration
+	// is not seen by the M10K (old data): a 12-bit bypass register with a hit flag per copy returns the written word
+	// then, as the MLAB's asynchronous read of the just-written word did.
+	wire        RMAP_WR_NX = REG_SEL && !WE_N && !DTEN_N && !REQ_N;
+	RPMD_t RMAP_RPMD_NX;
+	assign RMAP_RPMD_NX = !RST_N ? REGS.RPMD : !RES_N ? RPMD_t'(16'h0000) : (RMAP_WR_NX && {A[8:1],1'b0} == 9'h0B0) ? RPMD_t'(DI & RPMD_MASK) : REGS.RPMD;
+	PLSZ_t RMAP_PLSZ_NX;
+	assign RMAP_PLSZ_NX = !RST_N ? REGS.PLSZ : !RES_N ? PLSZ_t'(16'h0000) : (RMAP_WR_NX && {A[8:1],1'b0} == 9'h03A) ? PLSZ_t'(DI & PLSZ_MASK) : REGS.PLSZ;
+	wire        RMAP_R0RP_NX = RMAP_RPMD_NX.RPMD == 2'b10 ? R0RPMSB : R0RP_PIPE[3];
+	wire [ 1:0] RMAP_PLSZ0_NX = RMAP_R0RP_NX ? RMAP_PLSZ_NX.RBPLSZ : RMAP_PLSZ_NX.RAPLSZ;
+	wire [ 3:0] RMAP_IDX0_NX = RxMapIdx(RxX[RMAP_R0RP_NX].INT[11:0], RxY[RMAP_R0RP_NX].INT[11:0], RMAP_PLSZ0_NX);
+	wire [ 3:0] RMAP_IDX1_NX = RxMapIdx(RxX[1].INT[11:0], RxY[1].INT[11:0], RMAP_PLSZ_NX.RBPLSZ);
+	wire [ 3:0] RMAP_RA0_NX = {RMAP_R0RP_NX,RMAP_IDX0_NX[3:1]};
+	wire [ 3:0] RMAP_RA1_NX = {1'b1,RMAP_IDX1_NX[3:1]};
+	wire [11:0] RMAP_M0, RMAP_M1;
+	bit  [11:0] RMAP_BYP_D = '0;
+	bit         RMAP_BYP0 = 0, RMAP_BYP1 = 0;
+	always @(posedge CLK) begin
+		RMAP_BYP_D <= {DI[13:8],DI[5:0]};
+		RMAP_BYP0 <= RMAP_WE && RMAP_WA == RMAP_RA0_NX;
+		RMAP_BYP1 <= RMAP_WE && RMAP_WA == RMAP_RA1_NX;
+	end
+	VDP2_RMAP_RAM_M rmap0(.CLK(CLK), .WA(RMAP_WA), .D({DI[13:8],DI[5:0]}), .WE(RMAP_WE), .RA(RMAP_RA0_NX), .Q(RMAP_M0));
+	VDP2_RMAP_RAM_M rmap1(.CLK(CLK), .WA(RMAP_WA), .D({DI[13:8],DI[5:0]}), .WE(RMAP_WE), .RA(RMAP_RA1_NX), .Q(RMAP_M1));
+	assign RMAP_Q0 = RMAP_BYP0 ? RMAP_BYP_D : RMAP_M0;
+	assign RMAP_Q1 = RMAP_BYP1 ? RMAP_BYP_D : RMAP_M1;
+`else
 	VDP2_RMAP_RAM rmap0(.CLK(CLK), .WA(RMAP_WA), .D({DI[13:8],DI[5:0]}), .WE(RMAP_WE), .RA(RMAP_RA0), .Q(RMAP_Q0));
 	VDP2_RMAP_RAM rmap1(.CLK(CLK), .WA(RMAP_WA), .D({DI[13:8],DI[5:0]}), .WE(RMAP_WE), .RA(RMAP_RA1), .Q(RMAP_Q1));
+`endif
 	wire [ 5: 0] RMAP_V[2];
 	assign RMAP_V[0] = !RMAP_VALID[RMAP_RA0] ? 6'h00 : RMAP_IDX0[0] ? RMAP_Q0[11:6] : RMAP_Q0[5:0];
 	assign RMAP_V[1] = !RMAP_VALID[RMAP_RA1] ? 6'h00 : RMAP_IDX1[0] ? RMAP_Q1[11:6] : RMAP_Q1[5:0];
@@ -1729,8 +1814,23 @@ module VDP2 (
 	RotCoord_t   Xsp[2],Ysp[2];
 	RotCoord_t   Xp[2],Yp[2];
 	RotCoord_t   dX[2],dY[2];
+`ifndef FRESH_VDP2_RPST
 	RotCoord_t   Xst[2],Yst[2];
+`endif
+`ifdef FRESH_VDP2_KA
+	// FRESH_VDP2_KA: the coefficient table address RxKA = KAy + KAx is kept as one register KA per parameter set: it
+	// takes KAy's new value where KAx was cleared (step 23) and adds DKAx where KAx did; the combinational adder goes.
+	// Identical unless step 23 and a coefficient fetch land on the same DOT_CE_R edge (the increment then won over the
+	// clear): that needs the rotation parameter fetch window stretched into the coefficient window by a TVMD.HRESO
+	// change inside it (see the report).
+`ifdef FRESH_VDP2_RPST
+	RotAddr_t    KA[2];		//KAy is in RPS_RAM (FRESH_VDP2_RPST)
+`else
+	RotAddr_t    KA[2],KAy[2];
+`endif
+`else
 	RotAddr_t    KAx[2],KAy[2];
+`endif
 `ifdef CUT_VDP1_ROT
 	// (a1 prototype, Phase 2) The rotation parameter table words the per-line calculation reads (RP_POS[6:2] = 0-18,
 	// 21, 22: Xst ... MY, KAst, DKAst; KX, KY, DKAx stay registers: they are read on every dot) are kept in M10K
@@ -1776,6 +1876,41 @@ module VDP2 (
 		RPT_Q1 <= RPT1[RPT_A1]; RPT_Q2 <= RPT2[RPT_A2]; RPT_Q3 <= RPT3[RPT_A3]; RPT_Q4 <= RPT4[RPT_A4];
 	end
 `endif
+`ifdef FRESH_VDP2_RPST
+	// FRESH_VDP2_RPST: the per-line rotation state Xst / Yst (both parameter sets; with FRESH_VDP2_KA also KAy) in one
+	// M10K instead of registers. Each word is read and written in fixed steps of the per-line calculation (Xst: written
+	// at step 4, read at steps 4 and 14; Yst: 5 / 5 and 15; KAy: 23 / 23), one step = 8 clk_sys. The read address is
+	// the current step's word (VA_PIPE[2].RP_POS, which only changes on DOT_CE_R edges) and is registered on every
+	// clock, so RPS_Q holds the word from the step's second clock on; the step writes its word on its closing DOT_CE_R
+	// edge, as the registers were written (the readers use the value before that edge, as they did). Xst / Yst reset
+	// to 0 on RST_N: RPS_V marks the words written since (read as 0 before); KAy has no reset and the RAM powers up at
+	// 0 like the register.
+	(* ramstyle = "M10K, no_rw_check" *) bit [34:0] RPS_RAM[8];
+	bit  [34:0] RPS_Q = '0;
+	bit  [ 3:0] RPS_V;
+	wire [ 4:0] RPS_SC = VA_PIPE[2].RP_POS[6:2];
+	wire        RPS_NC = ~VA_PIPE[2].RP_POS[7];
+	wire [ 2:0] RPS_RW = (RPS_SC == 5'd4 || RPS_SC == 5'd14) ? {2'd0,RPS_NC} : (RPS_SC == 5'd5 || RPS_SC == 5'd15) ? {2'd1,RPS_NC} : {2'd2,RPS_NC};
+	wire        RPS_STEP = DOT_CE_R && (VA_PIPE[2].RPA || VA_PIPE[2].RPB);
+	wire [31:0] RPS_XY = RPS_V[RPS_RW[1:0]] ? RPS_Q[31:0] : 32'h00000000;
+	wire [31:0] RPS_XY_NEW = IS_LAST_LINE ? ScrnStartToRC(ScrnStart_t'(RPT_Q2)) : $signed(RPS_XY) + $signed(ScrnIncToRC(ScrnInc_t'(RPT_Q1)));
+`ifdef FRESH_VDP2_KA
+	wire [34:0] RPS_KAY_NEW = IS_LAST_LINE ? 35'd0 : $signed(RPS_Q) + $signed(AddrIncToRA(AddrInc_t'(RPT_Q4)));
+`endif
+	always @(posedge CLK) begin
+		if (RST_N && RPS_STEP) begin
+			if (RPS_SC == 5'd4 || RPS_SC == 5'd5) RPS_RAM[RPS_RW] <= {3'd0,RPS_XY_NEW};
+`ifdef FRESH_VDP2_KA
+			if (RPS_SC == 5'd23) RPS_RAM[RPS_RW] <= RPS_KAY_NEW;
+`endif
+		end
+		RPS_Q <= RPS_RAM[RPS_RW];
+	end
+	always @(posedge CLK or negedge RST_N) begin
+		if (!RST_N) RPS_V <= '0;
+		else if (RPS_STEP && (RPS_SC == 5'd4 || RPS_SC == 5'd5)) RPS_V[RPS_RW[1:0]] <= 1;
+	end
+`endif
 	always @(posedge CLK or negedge RST_N) begin
 		bit  [31: 0] RP_WD,RCT_WD;
 		bit          CT_RP;
@@ -1801,8 +1936,10 @@ module VDP2 (
 			Yp <= '{2{RC_NULL}};
 			dX <= '{2{RC_NULL}};
 			dY <= '{2{RC_NULL}};
+`ifndef FRESH_VDP2_RPST
 			Xst <= '{2{RC_NULL}};
 			Yst <= '{2{RC_NULL}};
+`endif
 		end
 		else begin
 			if (DOT_CE_R) begin
@@ -1892,6 +2029,10 @@ module VDP2 (
 				ACCY <= SUMY;
 				if (VA_PIPE[2].RPA || VA_PIPE[2].RPB) begin
 					case (VA_PIPE[2].RP_POS[6:2])
+`ifdef FRESH_VDP2_RPST
+						5'd04,
+						5'd05: begin end		//Xst / Yst: RPS_RAM (written in the RPS block with RPS_XY_NEW)
+`else
 						5'd04: begin 
 							Xst[N] <= $signed(Xst[N]) + $signed(ScrnIncToRC(ScrnInc_t'(RPT_Q1)));
 							if (IS_LAST_LINE) begin
@@ -1904,6 +2045,7 @@ module VDP2 (
 								Yst[N] <= ScrnStartToRC(ScrnStart_t'(RPT_Q2));
 							end
 						end
+`endif
 						
 						5'd12: begin 																				//sumx = 0 + (A * (РћвЂќX - 0)), sumy = 0 + (D * (РћвЂќX - 0))
 							SUBXA <= ScrnIncToRC(ScrnInc_t'(RPT_Q1)); SUBXB <= RC_NULL; 								//sub = РћвЂќX - 0
@@ -1922,16 +2064,26 @@ module VDP2 (
 						5'd14: begin 
 							dX[N] <= SUMX;																			//dX = accx + multx
 							dY[N] <= SUMY;																			//dY = accy + multy
+`ifdef FRESH_VDP2_RPST
+							SUBXA <= RPS_XY; SUBXB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[31:16]));								//sub = Xst - Px
+							SUBYA <= RPS_XY; SUBYB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[31:16]));								//sub = Xst - Px
+`else
 							SUBXA <= Xst[N]; SUBXB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[31:16]));								//sub = Xst - Px
 							SUBYA <= Xst[N]; SUBYB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[31:16]));								//sub = Xst - Px
+`endif
 							MULXA <= MatrParamToRC(MatrParam_t'(RPT_Q3));														//multx = A * sub
 							MULYA <= MatrParamToRC(MatrParam_t'(RPT_Q4)); 													//multy = D * sub
 							ACCX <= RC_NULL; 																		//accx = 0
 							ACCY <= RC_NULL; 																		//accy = 0
 						end
 						5'd15: begin 
+`ifdef FRESH_VDP2_RPST
+							SUBXA <= RPS_XY; SUBXB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[15:0]));								//sub = Yst - Py
+							SUBYA <= RPS_XY; SUBYB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[15:0]));								//sub = Yst - Py
+`else
 							SUBXA <= Yst[N]; SUBXB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[15:0]));								//sub = Yst - Py
 							SUBYA <= Yst[N]; SUBYB <= ScrnCoordToRC(ScrnCoord_t'(RPT_Q2[15:0]));								//sub = Yst - Py
+`endif
 							MULXA <= MatrParamToRC(MatrParam_t'(RPT_Q3));														//multx = B * sub
 							MULYA <= MatrParamToRC(MatrParam_t'(RPT_Q4)); 													//multy = E * sub
 						end
@@ -1983,11 +2135,29 @@ module VDP2 (
 						end
 						5'd23: begin
 							KAst[N] <= TblAddrToRC(TblAddr_t'(RPT_Q3));
+`ifdef FRESH_VDP2_RPST
+`ifndef FRESH_VDP2_KA
 							KAy[N] <= $signed(KAy[N]) + $signed(AddrIncToRA(AddrInc_t'(RPT_Q4)));
+`endif
+`else
+							KAy[N] <= $signed(KAy[N]) + $signed(AddrIncToRA(AddrInc_t'(RPT_Q4)));
+`endif
+`ifdef FRESH_VDP2_KA
+`ifdef FRESH_VDP2_RPST
+							KA[N] <= RPS_KAY_NEW;		//KAy's new value; KAy itself is written into RPS_RAM
+`else
+							KA[N] <= $signed(KAy[N]) + $signed(AddrIncToRA(AddrInc_t'(RPT_Q4)));
+							if (IS_LAST_LINE) begin
+								KAy[N] <= '0;
+								KA[N] <= '0;
+							end
+`endif
+`else
 							if (IS_LAST_LINE) begin
 								KAy[N] <= '0;
 							end
 							KAx[N] <= '0;
+`endif
 						end
 					endcase
 				end
@@ -1997,8 +2167,13 @@ module VDP2 (
 `else
 				if (VA_PIPE[0].RxA0CT[0] || VA_PIPE[0].RxA1CT[0] || VA_PIPE[0].RxB0CT[0] || VA_PIPE[0].RxB1CT[0] || VA_PIPE[0].RxCRCT[0]) begin
 `endif
+`ifdef FRESH_VDP2_KA
+					KA[0] <= $signed(KA[0]) + $signed(AddrIncToRA(RP_DKAx[0]));
+					KA[1] <= $signed(KA[1]) + $signed(AddrIncToRA(RP_DKAx[1]));
+`else
 					KAx[0] <= $signed(KAx[0]) + $signed(AddrIncToRA(RP_DKAx[0]));
 					KAx[1] <= $signed(KAx[1]) + $signed(AddrIncToRA(RP_DKAx[1]));
+`endif
 				end
 				
 				if (RBG_CALC) begin
@@ -2067,8 +2242,13 @@ module VDP2 (
 `endif
 		end
 	end
+`ifdef FRESH_VDP2_KA
+	assign RxKA[0] = KA[0];
+	assign RxKA[1] = KA[1];
+`else
 	assign RxKA[0] = $signed(KAy[0]) + $signed(KAx[0]);
 	assign RxKA[1] = $signed(KAy[1]) + $signed(KAx[1]);
+`endif
 				
 	//Rotattion parameter window
 	wire RPW0_HIT = W0_HIT_PIPE[3*2+1];
@@ -2345,6 +2525,27 @@ module VDP2 (
 	// there now. Power-up: RAM, pointer and pipeline all 0.
 	function automatic bit [9:0] PNF(input PN_t pn); return {pn.PALN, pn.HF, pn.PR, pn.CC}; endfunction
 	function automatic PN_t PNU(input bit [9:0] f); PN_t r; r = '0; {r.PALN, r.HF, r.PR, r.CC} = f; return r; endfunction
+`ifdef FRESH_VDP2_RING2
+	// FRESH_VDP2_RING2: two M10K halves (<= 40 read bits each) instead of one 70-bit inferred RAM in three blocks:
+	// half A = RBG0, RBG1, PN entries 1-2 (40 bits), half B = entries 3-7 (entries 6-7 are unread with CUT_NBG_QTR).
+	(* ramstyle = "M10K, no_rw_check" *) bit [39:0] PND_RAMA[4];
+	(* ramstyle = "M10K, no_rw_check" *) bit [49:0] PND_RAMB[4];
+	bit   [1:0] PND_W = 2'd0;
+	bit  [39:0] PND_QA = '0;
+	bit  [49:0] PND_QB = '0;
+	wire [89:0] PND_D = {PNF(PN_PIPE[0][7]), PNF(PN_PIPE[0][6]), PNF(PN_PIPE[0][5]), PNF(PN_PIPE[0][4]), PNF(PN_PIPE[0][3]),
+	                     PNF(PN_PIPE[0][2]), PNF(PN_PIPE[0][1]), PNF(RBG_PN_PIPE[0][1]), PNF(RBG_PN_PIPE[0][0])};
+	wire [89:0] PND_Q = {PND_QB, PND_QA};
+	always @(posedge CLK) begin
+		if (RST_N && DOT_CE_R) begin
+			PND_RAMA[PND_W] <= PND_D[39:0];
+			PND_RAMB[PND_W] <= PND_D[89:40];
+			PND_W <= PND_W + 2'd1;
+		end
+		PND_QA <= PND_RAMA[PND_W + 2'd1];		//slot PND_W - 3
+		PND_QB <= PND_RAMB[PND_W + 2'd1];
+	end
+`else
 	(* ramstyle = "M10K, no_rw_check" *) bit [89:0] PND_RAM[4];
 	bit   [1:0] PND_W = 2'd0;
 	bit  [89:0] PND_Q = '0;
@@ -2357,8 +2558,44 @@ module VDP2 (
 		end
 		PND_Q <= PND_RAM[PND_W + 2'd1];		//slot PND_W - 3
 	end
+`endif
+`ifdef FRESH_VDP2_BGR
+	// FRESH_VDP2_BGR: the stage-3-only fields of BG_PIPE (NxCH, NxCHS, NxCH_CNT) and RBG_PIPE (RxCH, RxCHS, RxCELLX)
+	// through a 4-slot M10K ring written on the pipelines' edges (RST_N and DOT_CE_R, the PND ring's pointer PND_W); stage
+	// 3 loads the slot written two edges earlier (PND_W - 2 = PND_W + 2, read on every clock). The data is the pipelines'
+	// stage-0 value, formed here from the same sources. Power-up: RAM and pipelines 0.
+	bit  [35:0] BGR_D;
+	always_comb begin
+		for (int i = 0; i < 4; i++) begin
+			BGR_D[i] = VA_PIPE[0].NxA0CH[i] | VA_PIPE[0].NxA1CH[i] | VA_PIPE[0].NxB0CH[i] | VA_PIPE[0].NxB1CH[i];
+			BGR_D[4 + i * 2 +: 2] = VA_PIPE[0].NxA0CH[i] && NxCH_ADDR[NBG_A0VA.Nx][18:17] == 2'b00 ? 2'd0 :
+			                        VA_PIPE[0].NxA1CH[i] && NxCH_ADDR[NBG_A1VA.Nx][18:17] == 2'b01 ? 2'd1 :
+			                        VA_PIPE[0].NxB0CH[i] && NxCH_ADDR[NBG_B0VA.Nx][18:17] == 2'b10 ? 2'd2 :
+			                        2'd3;
+			BGR_D[12 + i * 3 +: 3] = NBG_CH_CNT[i];
+		end
+		for (int i = 0; i < 2; i++) begin
+			BGR_D[24 + i] = VA_PIPE[0].RxA0CH[i] | VA_PIPE[0].RxA1CH[i] | VA_PIPE[0].RxB0CH[i] | VA_PIPE[0].RxB1CH[i];
+			BGR_D[26 + i * 2 +: 2] = VA_PIPE[0].RxA0CH[i] && RxCH_ADDR[RBG_A0VA.Rx][18:17] == 2'b00 ? 2'd0 :
+			                         VA_PIPE[0].RxA1CH[i] && RxCH_ADDR[RBG_A1VA.Rx][18:17] == 2'b01 ? 2'd1 :
+			                         VA_PIPE[0].RxB0CH[i] && RxCH_ADDR[RBG_B0VA.Rx][18:17] == 2'b10 ? 2'd2 :
+			                         2'd3;
+			BGR_D[30 + i * 3 +: 3] = VA_PIPE[4].RxX[i == 0 ? VA_PIPE[4].R0RP : 1'b1][2:0];
+		end
+	end
+	(* ramstyle = "M10K, no_rw_check" *) bit [35:0] BGR_RAM[4];
+	bit  [35:0] BGR_Q = '0;
+	always @(posedge CLK) begin
+		if (RST_N && DOT_CE_R) BGR_RAM[PND_W] <= BGR_D;
+		BGR_Q <= BGR_RAM[PND_W + 2'd2];		//slot PND_W - 2
+	end
+`endif
 	always @(posedge CLK or negedge RST_N) begin
 		bit [31: 0] PN_WD[4];
+`ifdef FRESH_VDP2_BGR
+		NBGState_t  BG1_D, BG3_D;	//FRESH_VDP2_BGR: BG_PIPE[1] / [3] next
+		RBGState_t  RB1_D, RB3_D;	//FRESH_VDP2_BGR: RBG_PIPE[1] / [3] next
+`endif
 		bit [ 1: 0] NCHSEL[4];	//bank of the CH word NCH[k] reads (was NBG_CH[source])
 		bit [31: 0] VS_WD[2];
 		bit [31: 0] LS_WD[2];
@@ -2891,9 +3128,26 @@ module VDP2 (
 					endcase
 				end
 				
+`ifdef FRESH_VDP2_BGR
+				// FRESH_VDP2_BGR: NxCH / NxCHS / NxCH_CNT are read at stage 3 only: stages 1-2 hold 0 (pruned) and stage 3
+				// loads the word the ring took two DOT_CE_R edges earlier (BGR_Q)
+				BG1_D = BG_PIPE[0];
+				BG1_D.NxCH = '0;
+				BG3_D = BG_PIPE[2];
+				BG3_D.NxCH = BGR_Q[3:0];
+				for (int i = 0; i < 4; i++) begin
+					BG1_D.NxCHS[i] = '0; BG1_D.NxCH_CNT[i] = '0;
+					BG3_D.NxCHS[i] = BGR_Q[4 + i * 2 +: 2];
+					BG3_D.NxCH_CNT[i] = BGR_Q[12 + i * 3 +: 3];
+				end
+				BG_PIPE[1] <= BG1_D;
+				BG_PIPE[2] <= BG_PIPE[1];
+				BG_PIPE[3] <= BG3_D;
+`else
 				BG_PIPE[1] <= BG_PIPE[0];
 				BG_PIPE[2] <= BG_PIPE[1];
 				BG_PIPE[3] <= BG_PIPE[2];
+`endif
 				
 				PN4_D = PN_PIPE[3];
 				for (int e = 1; e < 8; e++) PN4_D[e] = PNU(PND_Q[20 + (e - 1) * 10 +: 10]);
@@ -3029,9 +3283,25 @@ module VDP2 (
 				end
 			end
 			
+`ifdef FRESH_VDP2_BGR
+			// FRESH_VDP2_BGR: RxCH / RxCHS / RxCELLX likewise (read at stage 3 only)
+			RB1_D = RBG_PIPE[0];
+			RB1_D.RxCH = '0;
+			RB3_D = RBG_PIPE[2];
+			RB3_D.RxCH = BGR_Q[25:24];
+			for (int i = 0; i < 2; i++) begin
+				RB1_D.RxCHS[i] = '0; RB1_D.RxCELLX[i] = '0;
+				RB3_D.RxCHS[i] = BGR_Q[26 + i * 2 +: 2];
+				RB3_D.RxCELLX[i] = BGR_Q[30 + i * 3 +: 3];
+			end
+			RBG_PIPE[1] <= RB1_D;
+			RBG_PIPE[2] <= RBG_PIPE[1];
+			RBG_PIPE[3] <= RB3_D;
+`else
 			RBG_PIPE[1] <= RBG_PIPE[0];
 			RBG_PIPE[2] <= RBG_PIPE[1];
 			RBG_PIPE[3] <= RBG_PIPE[2];
+`endif
 			
 			RPN4_D[0] = PNU(PND_Q[9:0]);
 			RPN4_D[1] = PNU(PND_Q[19:10]);
@@ -3189,18 +3459,83 @@ module VDP2 (
 		CDC_NEW[3] = CdcByte(CDC_PM[3], CDC_PF[3], CDC_PC[3], CDC_W[3], NDC_WB, CDC_Q[31:24], 1'b1, 2'd0);	//16 bpp NCH[3][31:24],[15:8]; 32 bpp [31:24]
 `endif
 	end
+`ifdef FRESH_VDP2_CDCM
+	// FRESH_VDP2_CDCM: NBG_CDC in an M10K with a synchronous read. Word j is read in the clock whose NDC_WB is j and
+	// written back at its end; the next clock's NDC_WB is known one clock ahead ({DOTCLK_DIV's next value, CE_F}: CE_R /
+	// CE_F alternate every clock, Saturn.sv), so the read address is presented a clock early and Q holds word NDC_WB
+	// during the clock, as the asynchronous MLAB read did. Consecutive NDC_WB values differ in bit 0, so a read never
+	// meets the write of the same word.
+	wire [1:0] DOTCLK_DIV_NX = !RES_N ? 2'd0 : CE_R ? DOTCLK_DIV + 2'd1 : DOTCLK_DIV;
+	wire [2:0] NDC_WB_NX = {DOTCLK_DIV_NX, CE_F};
+	VDP2_CDC_RAM_M cdcram(CLK, NDC_WB, {CDC_NEW[3],CDC_NEW[2],CDC_NEW[1],CDC_NEW[0]}, NDC_WB_NX, CDC_Q);	//S5CHECK_CDC
+`else
 	VDP2_CDC_RAM cdcram(CLK, NDC_WB, {CDC_NEW[3],CDC_NEW[2],CDC_NEW[1],CDC_NEW[0]}, NDC_WB, CDC_Q);	//S5CHECK_CDC
+`endif
 	
 	// Ring copies with one read address share one 16-bit MLAB (R2). S2A (ring 2) and S1A / S3A (rings 1, 3) are read for
 	// N0DOT only in the modes where their index equals N0I_S0 (NBG0 4bpp 1/4, 8bpp 1/2 and normal; in 4bpp 1/2 N0DOT
 	// takes S0A alone), and S3B only where its index equals N1I_S1; so the NBG0 readers of rings 0-3 read at N0I_S0 and
 	// the NBG1 readers of rings 1 and 3 at N1I_S1, and the bytes they return when unused do not matter. 8 MLABs -> 5
 	// (one 32-bit MLAB pair costs 26 ALUTs more than two 16-bit MLABs in context).
+`ifdef FRESH_VDP2_NDCM
+	// FRESH_VDP2_NDCM: the five ring copies in M10Ks with a synchronous read (the read address is registered on every
+	// clock, Q follows one clock later) instead of asynchronous-read MLABs. The bytes are only consumed at the dot
+	// edges (DOT_CE_R, and DOT_CE_F in hi-res; 4 clocks apart), and the read address only changes at those edges: NCX
+	// (dot edges), NDC_PREV / NDC_CUR (DOT_CE_R), and for NBG0 / NBG1 the reduction mode (CHCN, ZMHF: register fields the
+	// CPU can write on any clock). So the address is formed from the next-state (write-through) value of those fields:
+	// what the registers hold in the clock before the edge is what they will hold after this clock, which is the value
+	// the asynchronous read used (while RST_N is low the register block holds: its reset branch is translate_off).
+	// Reads never meet a write: the ring writes the NEXT cell, the readers address PREV / CUR.
+	wire       REG_WR_NX = REG_SEL && !WE_N && !DTEN_N && !REQ_N;
+	CHCTLA_t CHCTLA_NX;
+	assign CHCTLA_NX = !RST_N ? REGS.CHCTLA : !RES_N ? CHCTLA_t'(16'h0000) : (REG_WR_NX && {A[8:1],1'b0} == 9'h028) ? CHCTLA_t'(DI & CHCTLA_MASK) : REGS.CHCTLA;
+	ZMCTL_t ZMCTL_NX;
+	assign ZMCTL_NX = !RST_N ? REGS.ZMCTL  : !RES_N ? ZMCTL_t'(16'h0000)  : (REG_WR_NX && {A[8:1],1'b0} == 9'h098) ? ZMCTL_t'(DI & ZMCTL_MASK)   : REGS.ZMCTL;
+	wire [2:0] N0CHCN_NX = CHCTLA_NX.N0CHCN;
+	wire [2:0] N1CHCN_NX = {1'b0,CHCTLA_NX.N1CHCN};
+	wire       N0ZMHF_NX = ZMCTL_NX.N0ZMHF;
+	wire       N1ZMHF_NX = ZMCTL_NX.N1ZMHF;
+`ifndef CUT_NBG_QTR
+	wire       N0ZMQT_NX = ZMCTL_NX.N0ZMQT;
+	wire       N1ZMQT_NX = ZMCTL_NX.N1ZMQT;
+`endif
+	bit  [3:0] N0I_S0_NX, N1I_S1_NX;
+	always_comb begin
+		if (N0CHCN_NX == 3'b000 && N0ZMHF_NX) begin
+			N0I_S0_NX = {NCX[0].INT[4],NCX[0].INT[2:0]};
+`ifndef CUT_NBG_QTR
+		end else if (N0CHCN_NX == 3'b000 && N0ZMQT_NX) begin
+			N0I_S0_NX = {NCX[0].INT[5],NCX[0].INT[2:0]};
+`endif
+		end else if (N0CHCN_NX == 3'b001 && N0ZMHF_NX) begin
+			N0I_S0_NX = {NCX[0].INT[4],NCX[0].INT[2:0]};
+		end else begin
+			N0I_S0_NX = NCX[0].INT[3:0];
+		end
+		if (N1CHCN_NX == 3'b000 && N1ZMHF_NX) begin
+			N1I_S1_NX = {NCX[1].INT[4],NCX[1].INT[2:0]};
+`ifndef CUT_NBG_QTR
+		end else if (N1CHCN_NX == 3'b000 && N1ZMQT_NX) begin
+			N1I_S1_NX = {NCX[1].INT[5],NCX[1].INT[2:0]};
+`endif
+		end else if (N1CHCN_NX == 3'b001 && N1ZMHF_NX) begin
+			N1I_S1_NX = {NCX[1].INT[4],NCX[1].INT[2:0]};
+		end else begin
+			N1I_S1_NX = NCX[1].INT[3:0];
+		end
+	end
+	VDP2_NDC_RAM_M #(16) ndcn0(CLK, NDC_WA, {CDC_NEW[2],CDC_NEW[0]}, NDC_BOUND, NdcRA(N0I_S0_NX, NDC_PREV, NDC_CUR), {S2A_Q,S0A_Q});
+	VDP2_NDC_RAM_M #(16) ndcn2(CLK, NDC_WA, {CDC_NEW[3],CDC_NEW[1]}, NDC_BOUND, NdcRA(N0I_S0_NX, NDC_PREV, NDC_CUR), {S3A_Q,S1A_Q});
+	VDP2_NDC_RAM_M #(16) ndcn1(CLK, NDC_WA, {CDC_NEW[3],CDC_NEW[1]}, NDC_BOUND, NdcRA(N1I_S1_NX, NDC_PREV, NDC_CUR), {S3B_Q,S1B_Q});
+	VDP2_NDC_RAM_M ndc2b(CLK, NDC_WA, CDC_NEW[2], NDC_BOUND, NdcRA(NCX[2].INT[3:0], NDC_PREV, NDC_CUR), S2B_Q);
+	VDP2_NDC_RAM_M ndc3c(CLK, NDC_WA, CDC_NEW[3], NDC_BOUND, NdcRA(NCX[3].INT[3:0], NDC_PREV, NDC_CUR), S3C_Q);
+`else
 	VDP2_NDC_RAM #(16) ndcn0(CLK, NDC_WA, {CDC_NEW[2],CDC_NEW[0]}, NDC_BOUND, NdcRA(N0I_S0, NDC_PREV, NDC_CUR), {S2A_Q,S0A_Q});
 	VDP2_NDC_RAM #(16) ndcn2(CLK, NDC_WA, {CDC_NEW[3],CDC_NEW[1]}, NDC_BOUND, NdcRA(N0I_S0, NDC_PREV, NDC_CUR), {S3A_Q,S1A_Q});
 	VDP2_NDC_RAM #(16) ndcn1(CLK, NDC_WA, {CDC_NEW[3],CDC_NEW[1]}, NDC_BOUND, NdcRA(N1I_S1, NDC_PREV, NDC_CUR), {S3B_Q,S1B_Q});
 	VDP2_NDC_RAM ndc2b(CLK, NDC_WA, CDC_NEW[2], NDC_BOUND, NdcRA(NCX[2].INT[3:0], NDC_PREV, NDC_CUR), S2B_Q);
 	VDP2_NDC_RAM ndc3c(CLK, NDC_WA, CDC_NEW[3], NDC_BOUND, NdcRA(NCX[3].INT[3:0], NDC_PREV, NDC_CUR), S3C_Q);
+`endif
 	always_comb begin
 		// read indices of the NBG0 / NBG1 readers, in the priority order of the dot selection below
 		if (NSxREG[0].CHCN == 3'b000 && NSxREG[0].ZMHF) begin
@@ -4397,8 +4732,13 @@ module VDP2 (
 	assign Yp_DBG = Yp;
 	assign dX_DBG = dX;
 	assign dY_DBG = dY;
+`ifdef FRESH_VDP2_RPST
+	assign Xst_DBG = '{2{'0}};
+	assign Yst_DBG = '{2{'0}};
+`else
 	assign Xst_DBG = Xst;
 	assign Yst_DBG = Yst;
+`endif
 //	assign N0SCX = SCX[0];
 //	assign N0SCY = SCY[0];
 //	assign CH_PIPE0 = RBG_CH_PIPE[0];
@@ -4428,13 +4768,35 @@ module VDP2 (
 //	assign DOT_FST_DBG = DOT_FST;
 //	assign DOT_SEC_DBG = DOT_SEC;
 //	assign DOT_THD_DBG = DOT_THD;
+`ifdef FRESH_VDP2_KA
+	assign KAx0_DBG = KA[0] - KAy[0];
+`else
 	assign KAx0_DBG = KAx[0];
+`endif
 	assign RA_D_ERR = {RA_D[63:48] != 16'd0,RA_D[47:32] != 16'd0,RA_D[31:16] != 16'd0,RA_D[15:0] != 16'd0};
 	assign RB_D_ERR = {RB_D[47:32] != 16'd0,RB_D[47:32] != 16'd0,RB_D[31:16] != 16'd0,RB_D[15:0] != 16'd0};
 
 `endif
 
 endmodule
+
+`ifdef FRESH_VDP2_RMAPM
+// FRESH_VDP2_RMAPM: 16 x 12 M10K, registered write, synchronous read (address registered, Q one clock later)
+module VDP2_RMAP_RAM_M (
+	input             CLK,
+	input  [ 3:0]     WA,
+	input  [11:0]     D,
+	input             WE,
+	input  [ 3:0]     RA,
+	output reg [11:0] Q
+);
+	(* ramstyle = "M10K, no_rw_check" *) reg [11:0] mem [0:15];
+	always @(posedge CLK) begin
+		if (WE) mem[WA] <= D;
+		Q <= mem[RA];
+	end
+endmodule
+`endif
 
 // 16 x 12 MLAB, registered write, asynchronous read (the rotation map registers)
 module VDP2_RMAP_RAM (
@@ -4450,6 +4812,23 @@ module VDP2_RMAP_RAM (
 	assign Q = mem[RA];
 endmodule
 
+`ifdef FRESH_VDP2_CDCM
+// FRESH_VDP2_CDCM: 8 x 32 M10K, registered write every clock, synchronous read (address registered, Q one clock later)
+module VDP2_CDC_RAM_M (
+	input             CLK,
+	input  [ 2:0]     WA,
+	input  [31:0]     D,
+	input  [ 2:0]     RA,
+	output reg [31:0] Q
+);
+	(* ramstyle = "M10K, no_rw_check" *) reg [31:0] mem [0:7];
+	always @(posedge CLK) begin
+		mem[WA] <= D;
+		Q <= mem[RA];
+	end
+endmodule
+`endif
+
 // 8 x 32 MLAB, registered write every clock, asynchronous read (NBG_CDC: word j = byte j of NBG3..NBG0)
 module VDP2_CDC_RAM (
 	input         CLK,
@@ -4462,6 +4841,24 @@ module VDP2_CDC_RAM (
 	always @(posedge CLK) mem[WA] <= D;
 	assign Q = mem[RA];
 endmodule
+
+`ifdef FRESH_VDP2_NDCM
+// FRESH_VDP2_NDCM: 32 x W M10K, registered write, synchronous read (address registered every clock, Q one clock later)
+module VDP2_NDC_RAM_M #(parameter W = 8) (
+	input              CLK,
+	input  [  4:0]     WA,
+	input  [W-1:0]     D,
+	input              WE,
+	input  [  4:0]     RA,
+	output reg [W-1:0] Q
+);
+	(* ramstyle = "M10K, no_rw_check" *) reg [W-1:0] mem [0:31];
+	always @(posedge CLK) begin
+		if (WE) mem[WA] <= D;
+		Q <= mem[RA];
+	end
+endmodule
+`endif
 
 // 32 x W MLAB, registered write, asynchronous read (one read port of VDP2 cell dot buffer rings, W/8 rings side by side)
 module VDP2_NDC_RAM #(parameter W = 8) (

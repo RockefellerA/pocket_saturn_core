@@ -1,3 +1,6 @@
+// A8 (work/a8, 2026-11-03), only with `define A8_RHC: a RAM-H cache in block RAM in place of the 2-line buffer (section
+// "(A8) RAM-H cache" below); without the macro the file is A7d's. A8_RHC_SW (bench only) keeps both and switches at
+// run time (rhc_on). A8_RHC_SL = log2 of the sets (default 6: 4 KB); A8_RHC_NOPF = no next-line prefetch.
 // A6 (work/a6, diagnostic build, 2026-11-01), only with `define A6_DBG: psram_phy's new A6 ports: gap2 tied to 0 (A5's
 // timing, so PSRAM 0 is A5's exactly); its WAIT monitors' pulses (any die, READ or WRITE) leave as dbg_wait (the debug
 // squares' PSRAM 0 control flag).
@@ -74,7 +77,23 @@
 module psram0_arb #(
 	parameter int PS_LC   = 2,
 	parameter int PS_INIT = 16384,
-	parameter bit LEAN    = 1'b0      // (Pocket copy) D4: backup port without its line buffer
+	parameter bit LEAN    = 1'b0,     // (Pocket copy) D4: backup port without its line buffer
+	// (A8) RAM-H cache: log2 of the sets, the smallest set count the bench's mask may select (tag width), prefetch
+`ifdef A8_RHC_SL
+	parameter int RHC_SL    = `A8_RHC_SL,
+`else
+	parameter int RHC_SL    = 6,
+`endif
+`ifdef A8_RHC_SLMIN
+	parameter int RHC_SLMIN = `A8_RHC_SLMIN,
+`else
+	parameter int RHC_SLMIN = RHC_SL,
+`endif
+`ifdef A8_RHC_NOPF
+	parameter bit RHC_PF    = 1'b0
+`else
+	parameter bit RHC_PF    = 1'b1
+`endif
 ) (
 	input  logic        clk,
 	input  logic        rst,
@@ -230,7 +249,12 @@ module psram0_arb #(
 	// the running fill brings this half (and was not spoiled by a write): wait for it
 	wire         rh_coming = rh_fill && !rh_kill && rh_fill_tag == ramh_addr[19:5] && (rh_fill_h0 == ramh_addr[4] || rh_fill_two);
 	always_ff @(posedge clk) rh_buf_q <= rh_buf[{rh_tm1, ramh_addr[4:2]}];
+`ifdef A8_RHC
+	logic [31:0] dt_qa;              // (A8) the cache's longword at the live address
+	assign ramh_dout = ramh_onchip ? ramh_ram_q : rhc_on ? dt_qa : rh_buf_q;
+`else
 	assign ramh_dout = ramh_onchip ? ramh_ram_q : rh_buf_q;
+`endif
 	// write queue: a 32-bit write = the high word (if enabled) in the clk of the request, the low word in the next
 	logic        rh_lo_pend;
 	logic        rq_full, rq_empty, rq_valid;
@@ -245,10 +269,76 @@ module psram0_arb #(
 		.req_valid(rh_push_hi || rh_push_lo), .req_addr({rw_addr, rh_lo_pend || !(|rw_wr[3:2])}),   // (A2) [0]: = !rh_push_hi when valid
 		.req_data(rh_push_hi ? rw_din[31:16] : rw_din[15:0]), .req_be(rh_push_hi ? rw_wr[3:2] : rw_wr[1:0]),
 		.full(rq_full), .empty(rq_empty),
+`ifdef FRESH_VBUSY
+		.full_n(),
+`endif
 		.m_valid(rq_valid), .m_ready(cmd_ready && issue_ok && sel == C_RAMH_W), .m_addr(rq_addr), .m_len(rq_len),
 		.m_wd_pop(wd_pop && cur == C_RAMH_W), .m_wd_data(rq_wd), .m_wd_be(rq_wbe)
 	);
+`ifdef A8_RHC
+	logic rhc_busy;                  // (A8)
+	assign ramh_busy = rq_full || (rhc_on ? rhc_busy : rh_pend || (rh_wait && !rh_hv[rh_want_w][rh_want_h]));
+`else
 	assign ramh_busy = rq_full || rh_pend || (rh_wait && !rh_hv[rh_want_w][rh_want_h]);
+`endif
+
+`ifdef A8_RHC
+	// ------------------------------------------------------------------------------------------- (A8) RAM-H cache
+	// A 2-way set-associative cache of 32-byte lines in block RAM in place of the 2-line buffer above (which the bench's
+	// A8_RHC_SW keeps for its run-time switch): 2^RHC_SL sets (6: 4 KB, 8: 16 KB), valid per 16-byte half, LRU victim
+	// (a way that holds no line first), write-update. The first 4 KB stay on chip. A miss fills as the buffer did
+	// (half 0: 16 words, half 1: 8 words, into the way that holds the line if one does); with RHC_PF the end of a
+	// demand fill starts a fill of the next line if no way holds it (16 words, into the set's empty way or the other
+	// way by turns, never the way of the last hit's line, left as the set's next victim). A demand miss cancels a
+	// prefetch that is not yet issued.
+	// Requests: a new read strobe, or a new 16-byte half while the strobe stays low (the SCU's DMA reads). A request in
+	// the line of the last hit whose half is valid is answered at once (data in the next clk, as the buffer's hits);
+	// any other is looked up in two clks (timing, A8 fix): LK1 compares the set's entries and registers the outcome,
+	// LK2 acts on it; busy in both (the SCU samples MEM_WAIT_N in LK1, at its clk_sys edge; the SH-2 BSC only at
+	// TRCAS, ~8 clk later); a hit answers from the clk after LK2 on, a miss is busy until its half is in. Data are read
+	// every clk at {way, set, longword}: the way from the last hit, so beats 1-3 of an SH-2 line fill (one per SH-2
+	// clock, data needed one clk after the address) keep it.
+	// Tag RAMs: one per way, {tag, valid halves}; port A reads at the live address, port B serves (in this order) the
+	// flush sweep, the write path's reads, the fill's tag writes (set-up, half marks), the prefetch's set-up and
+	// lookup. The fill registers hold the entry of the last fill's way (f_set / f_way, with a half being marked in
+	// this clk): lookups, writes and set-ups take that entry from them, so a tag RAM write still on its way never
+	// matters, and nothing else changes a tag entry.
+	// Writes (A2 capture registers): U0 reads the set's tags, U1 finds whether the longword's half is valid in the
+	// cache and registers that, U2 writes the longword (byte enables; a fill longword in the same clk goes first and
+	// the update follows a clk later). The write's address and data stay in u1_* until the next write (writes come
+	// at most every 2 clk_sys, reads of the longword far later: the SCU's next read strobe is >= 3 CE_R away). A
+	// write to the line of a running fill kills it (its halves are not marked, as rh_kill); writes into slots of a
+	// line being filled before its words come are overwritten by them.
+	// (A8 timing fix, 2026-11-04: the measured version decided and wrote in U1, looked up and acted in one clk, and
+	// compared the fill registers at the set-up; its fits missed clk_ram by 1.7-4.6 ns on those paths.)
+	localparam int SL = RHC_SL;
+	localparam int TL = 5 + RHC_SLMIN;     // tag = addr[19:TL]
+	localparam int TW = 20 - TL;
+`ifdef A8_RHC_SW
+	// (bench, public: set from the testbench) rhc_on 0 = the 2-line buffer (A7d), 1 = the cache, set once while the
+	// buffer is idle (rhc_safe); rhc_msk = the set index mask (a smaller cache); rhc_pf = prefetch
+	logic          rhc_on  = 1'b0;
+	logic [SL-1:0] rhc_msk = '1;
+	logic          rhc_pf  = 1'b1;
+`else
+	localparam bit          rhc_on  = 1'b1;
+	localparam bit [SL-1:0] rhc_msk = '1;
+	localparam bit          rhc_pf  = RHC_PF;
+`endif
+	// fill engine (the arbiter's C_RAMH_R reads while rhc_on)
+	logic          f_has;              // the fill registers hold the entry of way f_way of set f_set
+	logic          f_act;              // a fill is set up and its words are not all in
+	logic          f_iss;              // its PSRAM read is issued
+	logic          f_pf;               // it is a prefetch
+	logic          f_kill;             // a write to its line came: its halves are not marked
+	logic [14:0]   f_line;             // its line (RAM-H addr[19:5])
+	logic          f_h0, f_two;        // its first half, 16 words
+	logic [SL-1:0] f_set;
+	logic          f_way;
+	logic [TW-1:0] f_tag;
+	logic  [1:0]   f_v;                // the entry's valid halves
+	wire           rhc_fill_rq = f_act && !f_iss && rq_empty;   // (a fill waits until the write queue is empty)
+`endif
 
 	// ------------------------------------------------------------------------------------------- 16-bit line clients
 	// one 16-word line buffer each (bsram: 8 words); writes use the client's held address and data
@@ -300,10 +390,16 @@ module psram0_arb #(
 	logic [15:0] vc_din;
 	logic  [1:0] vc_wr;
 	always_ff @(posedge clk) begin vc_v <= v_wq && !rst; vc_addr <= vdp1vram_addr; vc_din <= vdp1vram_din; vc_wr <= vdp1vram_wr; end
+`ifdef FRESH_VBUSY
+	logic        vq_full_n;          // (FRESH_VBUSY) vq's full one clk ahead
+`endif
 	wr_queue #(.AW(18), .CD(2), .DD(5)) vq (
 		.clk(clk), .rst(rst),
 		.req_valid(vc_v), .req_addr(vc_addr), .req_data(vc_din), .req_be(vc_wr),
 		.full(vq_full), .empty(vq_empty),
+`ifdef FRESH_VBUSY
+		.full_n(vq_full_n),
+`endif
 		.m_valid(vq_valid), .m_ready(cmd_ready && issue_ok && sel == C_V_W), .m_addr(vq_addr), .m_len(vq_len),
 		.m_wd_pop(wd_pop && cur == C_V_W), .m_wd_data(vq_wd), .m_wd_be(vq_wbe)
 	);
@@ -318,7 +414,18 @@ module psram0_arb #(
 	// a read that starts a new fill: a burst (blen words from the address) unless it is the buffered burst, or a
 	// line (16 words around the address) outside the buffered range
 	wire         v_new = vdp1vram_blen != 9'd0 ? (!v_val || !v_burst || vdp1vram_addr != v_start) : !v_inrange;
+`ifdef FRESH_VBUSY
+	// (FRESH_VBUSY, work/fresh/glue, 2026-11-04; timing, exact) the VDP1's busy as one register loaded with the value
+	// vq_full || v_wait takes at the next edge (v_wait's own next value, from its assignments in the state block below;
+	// the queue's full_n): the OR gate and one routing hop leave the clk_ram -> clk_sys path into the VDP1's VRAM state
+	// (the second worst path of the fitted build)
+	logic        v_busy_r;
+	wire         v_wait_n = !rst && (v_rq ? (v_new || v_off >= v_vis) : (v_wait && (v_nf || v_off >= v_vis)));
+	always_ff @(posedge clk) v_busy_r <= v_wait_n || vq_full_n;
+	assign vdp1vram_busy = v_busy_r;
+`else
 	assign vdp1vram_busy = vq_full || v_wait;
+`endif
 	// next chunk: from v_ca to the end of its aligned 32-word block, at most v_left words
 	wire   [5:0] v_blk   = 6'd32 - {1'b0, v_ca[5:1]};
 	wire         v_lastc = {3'd0, v_blk} >= v_left;
@@ -346,9 +453,16 @@ module psram0_arb #(
 			if (g_req[k[2:0]]) g_sel = k[2:0];
 		end
 	end
+`ifdef A8_RHC
+	wire ramh_req   = rq_valid || (rhc_on ? rhc_fill_rq : rh_fill && !rh_done && !rh_issued && rq_empty);
+	// (a pending fill keeps the turn until it is issued: the CPU waits on it, and the writes before it go first;
+	// (A8) not a prefetch)
+	wire serve_ramh = ramh_req && (!last_ramh || !g_any || (rhc_on ? f_act && !f_iss && !f_pf : rh_fill && !rh_issued));
+`else
 	wire ramh_req   = rq_valid || (rh_fill && !rh_done && !rh_issued && rq_empty);
 	// (a pending fill keeps the turn until it is issued: the CPU waits on it, and the writes before it go first)
 	wire serve_ramh = ramh_req && (!last_ramh || !g_any || (rh_fill && !rh_issued));
+`endif
 	// stage 1: the client to serve next, registered (timing); stage 2 issues it if it is still pending
 	cl_t         nsel, gsel;
 	logic        nsel_v, gsel_v;
@@ -371,7 +485,11 @@ module psram0_arb #(
 	always_comb begin
 		case (gsel)
 			C_RAMH_W: still = rq_valid;
+`ifdef A8_RHC
+			C_RAMH_R: still = rhc_on ? rhc_fill_rq : rh_fill && !rh_done && !rh_issued && rq_empty;
+`else
 			C_RAMH_R: still = rh_fill && !rh_done && !rh_issued && rq_empty;
+`endif
 			C_CD_W:   still = cd_wp;
 			C_CD_R:   still = cd_fill && !cd_done;
 			C_RL_W:   still = rl_wp;
@@ -394,7 +512,13 @@ module psram0_arb #(
 		sel_we = 1'b1; sel_addr = '0; sel_len = '0;
 		case (gsel)
 			C_RAMH_W: begin sel_addr = {4'h0, rq_addr}; sel_len = rq_len; end
+`ifdef A8_RHC
+			C_RAMH_R: begin sel_we = 1'b0;
+				sel_addr = rhc_on ? {4'h0, f_line, f_h0, 3'd0} : {4'h0, rh_fill_tag, rh_fill_h0, 3'd0};
+				sel_len  = (rhc_on ? f_two : rh_fill_two) ? 5'd15 : 5'd7; end
+`else
 			C_RAMH_R: begin sel_we = 1'b0; sel_addr = {4'h0, rh_fill_tag, rh_fill_h0, 3'd0}; sel_len = rh_fill_two ? 5'd15 : 5'd7; end
+`endif
 			C_CD_W:   sel_addr = {5'b00111, cdram_addr};
 			C_CD_R:   begin sel_we = 1'b0; sel_addr = {5'b00111, cd_tag, 4'd0}; sel_len = 5'd15; end
 			C_RL_W:   sel_addr = rl_map(raml_addr);
@@ -432,6 +556,259 @@ module psram0_arb #(
 	assign issue_ok  = !busy_m || fin;              // (A2: also in the clk the last read word is presented)
 	assign cmd_valid = sel_v && issue_ok;
 	wire   acc = cmd_valid && cmd_ready;
+
+`ifdef A8_RHC
+	// ------------------------------------------------------------------------------------------- (A8) RAM-H cache logic
+	logic          sweep, sw_end, sw_req, rl_req;   // flush sweep; the clk after it; a request came during it; a waiter
+	                                              // whose fill was spoiled looks again
+	logic [SL-1:0] sw_a;
+	// requests: a new read strobe, or a new half while the strobe stays low (outside the first 4 KB); a request that came
+	// during the sweep, or a spoiled waiter, is looked up again (the requester holds its address while busy; the SCU's
+	// strobe is one clk_sys long, so the strobe itself may be gone)
+	logic [19:4]   c_old;
+	always_ff @(posedge clk) c_old <= ramh_addr[19:4];
+	wire           c_new  = ramh_rd && (!ramh_rd_o || c_old != ramh_addr[19:4]);
+	wire           c_req  = rhc_on && !ramh_onchip && (c_new || (sw_end && sw_req) || rl_req);
+	wire [SL-1:0]  c_set  = ramh_addr[5 +: SL] & rhc_msk;
+	// the line of the last hit (or of the half a waiter got): a request in it whose half is valid is answered at once
+	logic          cur_ok, cur_way;
+	logic [14:0]   cur_line;
+	logic  [1:0]   cur_hv;
+	wire           c_fast  = cur_ok && cur_line == ramh_addr[19:5] && cur_hv[ramh_addr[4]];
+	wire [SL-1:0]  cur_set = cur_line[SL-1:0] & rhc_msk;
+
+	// tag RAMs (per way {tag, valid halves}; port A: the live address, port B: below), LRU RAM (the set's next victim),
+	// data RAM ({way, set, longword}; port A: the live address in cur_way, port B: fill longwords and write updates)
+`ifdef FRESH_TAGPACK
+	// (FRESH_TAGPACK, work/fresh/glue, 2026-11-04; exact) the two ways' entries side by side in one RAM word, each in its
+	// own byte lane (TW + 2 = 9 bits with SL = SLMIN = 8: M10K byte enables are 9 bits in the x18 mode), written per way
+	// with the lane enables: 2 M10K (the two read ports) in place of 4
+	(* ramstyle = "M10K" *) logic [2*TW+3:0] tg [2**SL];
+`else
+	(* ramstyle = "M10K" *) logic [TW+1:0] tg0 [2**SL];
+	(* ramstyle = "M10K" *) logic [TW+1:0] tg1 [2**SL];
+`endif
+	(* ramstyle = "M10K" *) logic          lru [2**SL];
+	(* ramstyle = "M10K" *) logic [31:0]   dt  [2**(SL+4)];
+	logic [TW+1:0] ta0, ta1, tb0, tb1, tb_d;
+	logic          lru_q, tb_we0, tb_we1, lru_we, lru_wd;
+	logic [SL-1:0] tb_a, lru_wa;
+	logic          db_we;
+	logic [SL+3:0] db_a;
+	logic [31:0]   db_d;
+	logic  [3:0]   db_be;
+`ifdef FRESH_TAGPACK
+	always_ff @(posedge clk) begin
+		{ta1, ta0} <= tg[c_set];
+		if (tb_we0) tg[tb_a][TW+1:0] <= tb_d;
+		if (tb_we1) tg[tb_a][2*TW+3:TW+2] <= tb_d;
+		{tb1, tb0} <= tg[tb_a];
+	end
+`else
+	always_ff @(posedge clk) begin ta0 <= tg0[c_set]; if (tb_we0) tg0[tb_a] <= tb_d; tb0 <= tg0[tb_a]; end
+	always_ff @(posedge clk) begin ta1 <= tg1[c_set]; if (tb_we1) tg1[tb_a] <= tb_d; tb1 <= tg1[tb_a]; end
+`endif
+	always_ff @(posedge clk) begin lru_q <= lru[c_set]; if (lru_we) lru[lru_wa] <= lru_wd; end
+	always_ff @(posedge clk) begin
+		dt_qa <= dt[{cur_way, c_set, ramh_addr[4:2]}];
+		for (int b = 0; b < 4; b++) if (db_we && db_be[b]) dt[db_a][b*8 +: 8] <= db_d[b*8 +: 8];
+	end
+
+	// the fill registers' entry with a half being marked in this clk
+	logic          mk_now, mk_h, mk_rq;   // mark a half (one clk after its last longword); its tag RAM write is due
+	wire  [1:0]    fv_now = f_v | ((mk_now && !f_kill) ? (2'b01 << mk_h) : 2'b00);
+
+	// lookup: a request's set's entries are out in the clk after it
+	logic          lk_v, lk_fast;
+	logic [19:4]   lk_a;
+	always_ff @(posedge clk) begin lk_v <= c_req && !sweep && !rst && !flush; lk_a <= ramh_addr[19:4]; lk_fast <= c_fast; end
+	wire [14:0]    lk_line  = lk_a[19:5];
+	wire           lk_half  = lk_a[4];
+	wire [SL-1:0]  lk_set   = lk_a[5 +: SL] & rhc_msk;
+	wire [TW-1:0]  lk_tag   = lk_a[19:TL];
+	wire           lk_ov    = f_has && lk_set == f_set;
+	wire [TW+1:0]  le0      = (lk_ov && !f_way) ? {f_tag, fv_now} : ta0;
+	wire [TW+1:0]  le1      = (lk_ov &&  f_way) ? {f_tag, fv_now} : ta1;
+	wire           lm0      = le0[TW+1:2] == lk_tag, lm1 = le1[TW+1:2] == lk_tag;
+	wire  [1:0]    lv0      = le0[1:0], lv1 = le1[1:0];
+	wire           lh0      = lm0 && lv0[lk_half], lh1 = lm1 && lv1[lk_half];
+	wire           le0_free = le0[1:0] == 2'b00 && !(lk_ov && !f_way && f_act);   // holds no line, not being filled
+	wire           le1_free = le1[1:0] == 2'b00 && !(lk_ov &&  f_way && f_act);
+	wire           lk_coming = f_act && !f_kill && f_line == lk_line && (f_h0 == lk_half || f_two);
+	// LK2: the lookup's outcome (k_*). Between LK1 and LK2 no set-up runs (a demand's needs mp_pend, a prefetch's
+	// pf_ok), so the entries it saw stay; a coming half may be marked in LK2, or its fill end unmarked (spoiled):
+	// LK2 checks both. A hit's way is lm1 (a line is in one way at most).
+	logic          k_v, k_hit, k_coming, k_way, k_pres, k_vic;
+	logic  [1:0]   k_pv;
+	logic [19:4]   k_a;
+	always_ff @(posedge clk) begin
+		k_v <= lk_v && !lk_fast && !rst && !flush;
+		k_a <= lk_a; k_hit <= lh0 || lh1; k_coming <= lk_coming; k_way <= lm1; k_pres <= lm0 || lm1;
+		k_pv <= lm1 ? le1[1:0] : le0[1:0]; k_vic <= le0_free ? 1'b0 : le1_free ? 1'b1 : lru_q;
+	end
+	wire [14:0]    k_line = k_a[19:5];
+	wire           k_half = k_a[4];
+	wire [SL-1:0]  k_set  = k_a[5 +: SL] & rhc_msk;
+	wire [TW-1:0]  k_tag  = k_a[19:TL];
+	wire           k_ovp  = f_has && k_set == f_set && k_way == f_way;   // a miss's present way's entry: the fill registers'
+
+	// demand misses. Set at the miss (LK2), as the fill registers and the line of the last hit do not change until its
+	// set-up (no other set-up, lookup or waiter runs meanwhile): mp_ovp = k_ovp, mp_prs: the line is still in that way,
+	// mp_kcur: the set-up evicts the line of the last hit
+	logic          mp_pend, mp_wait, mp_half, mp_pres, mp_pw, mp_vic, mp_ovp, mp_prs, mp_kcur;
+	logic [14:0]   mp_line;
+	logic  [1:0]   mp_pv;
+	// (a prefetch the arbiter has chosen (stage 1) is not dropped: it may be issued in this clk with its own address)
+	wire           eng_free = !f_act || (f_pf && !f_iss && !(gsel_v && gsel == C_RAMH_R));
+	wire [SL-1:0]  s_set = mp_line[SL-1:0] & rhc_msk;
+	wire [TW-1:0]  s_tag = mp_line[14:TL-5];
+	wire  [1:0]    s_pv  = mp_ovp ? fv_now : mp_pv;
+	wire           s_way = mp_pres ? mp_pw : mp_vic;
+	wire  [1:0]    s_v   = mp_prs ? s_pv : 2'b00;
+	wire           su_go = mp_pend && eng_free;
+
+	// prefetch
+	logic          pf_rq, pf_look, pf_go, pf_way, f_tgl;
+	logic [14:0]   pf_line;
+	wire [SL-1:0]  pf_set = pf_line[SL-1:0] & rhc_msk;
+	wire [TW-1:0]  pf_tag = pf_line[14:TL-5];
+	wire           pf_ok  = !mp_pend && !f_act && !(lk_v && !lk_fast) && !k_v;   // nothing of the demand's in flight
+	wire           pf_rd  = pf_rq && !pf_look && !pf_go && pf_ok;
+	// never the current line's way: the SH-2 BSC reads beats 1-3 of a line fill without looking at WAIT, so the line
+	// of the last hit must stay until another request (a prefetch set up during a burst would evict it under the burst)
+	wire           pf_kcur = cur_ok && cur_set == pf_set && cur_way == pf_way;
+	wire           pfs_go = pf_go && pf_ok && !pf_kcur;
+	wire           pf_ov  = f_has && pf_set == f_set;
+	wire [TW+1:0]  pe0    = (pf_ov && !f_way) ? {f_tag, fv_now} : tb0;
+	wire [TW+1:0]  pe1    = (pf_ov &&  f_way) ? {f_tag, fv_now} : tb1;
+	wire           pf_hit = pe0[TW+1:2] == pf_tag || pe1[TW+1:2] == pf_tag;
+	wire           pf_vic = (cur_ok && cur_set == pf_set) ? !cur_way : pe0[1:0] == 2'b00 ? 1'b0 : pe1[1:0] == 2'b00 ? 1'b1 : f_tgl;
+
+	// writes: u1_* = the last write (loaded at its U0, held through its U2); u1_ov (made in U0: no set-up runs then,
+	// u0 has tag port B) = its set's entry of way f_way is the fill registers'; u1_upd: U2 writes it (way u2_way)
+	wire           u0 = rhc_on && ramh_wq && !rw_onchip && !sweep;
+	logic          u1, u1_ov, u2, u2_way;
+	logic [19:2]   u1_a;
+	logic [31:0]   u1_d;
+	logic  [3:0]   u1_be;
+	wire [SL-1:0]  u1_set = u1_a[5 +: SL] & rhc_msk;
+	wire [TW-1:0]  u1_tag = u1_a[19:TL];
+	wire [TW+1:0]  ue0    = (u1_ov && !f_way) ? {f_tag, fv_now} : tb0;
+	wire [TW+1:0]  ue1    = (u1_ov &&  f_way) ? {f_tag, fv_now} : tb1;
+	wire  [1:0]    uv0    = ue0[1:0], uv1 = ue1[1:0];
+	wire           uh0    = ue0[TW+1:2] == u1_tag && uv0[u1_a[4]];
+	wire           uh1    = ue1[TW+1:2] == u1_tag && uv1[u1_a[4]];
+	wire           u1_upd = u1 && (uh0 || uh1);
+	wire           fw     = rhc_on && rd_valid && cur == C_RAMH_R && rcnt[0];   // a fill longword
+
+	// tag RAM port B
+	logic          pb_mk, pb_su, pb_pfs, pb_pfr;
+	always_comb begin
+		tb_we0 = 1'b0; tb_we1 = 1'b0; tb_a = '0; tb_d = '0; pb_mk = 1'b0; pb_su = 1'b0; pb_pfs = 1'b0; pb_pfr = 1'b0;
+		if (sweep) begin tb_a = sw_a; tb_we0 = 1'b1; tb_we1 = 1'b1; end
+		else if (u0) tb_a = rw_addr[5 +: SL] & rhc_msk;
+		else if (mk_rq) begin tb_a = f_set; tb_d = {f_tag, f_v}; tb_we0 = !f_way; tb_we1 = f_way; pb_mk = 1'b1; end
+		else if (su_go) begin tb_a = s_set; tb_d = {s_tag, s_v}; tb_we0 = !s_way; tb_we1 = s_way; pb_su = 1'b1; end
+		else if (pfs_go) begin tb_a = pf_set; tb_d = {pf_tag, 2'b00}; tb_we0 = !pf_way; tb_we1 = pf_way; pb_pfs = 1'b1; end
+		else if (pf_rd) begin tb_a = pf_set; pb_pfr = 1'b1; end
+	end
+	// data RAM port B
+	always_comb begin
+		db_we = 1'b0; db_a = '0; db_d = '0; db_be = 4'h0;
+		if (fw) begin db_we = 1'b1; db_a = {f_way, f_set, f_h0 | rcnt[3], rcnt[2:1]}; db_d = {rh_hi, rd_data}; db_be = 4'hF; end
+		else if (u2) begin db_we = 1'b1; db_a = {u2_way, u1_set, u1_a[4:2]}; db_d = u1_d; db_be = u1_be; end
+	end
+
+	assign rhc_busy = sweep || sw_end || rl_req || (lk_v && !lk_fast) || k_v || mp_pend || mp_wait;
+
+	always_ff @(posedge clk) begin
+		lru_we <= 1'b0; mk_now <= 1'b0; sw_end <= 1'b0; rl_req <= 1'b0;
+		u1 <= u0; u1_ov <= f_has && (rw_addr[5 +: SL] & rhc_msk) == f_set;
+		if (u0) begin u1_a <= rw_addr; u1_d <= rw_din; u1_be <= rw_wr; end
+		if (u1_upd) begin u2 <= 1'b1; u2_way <= uh1; end
+		else if (u2 && !fw) u2 <= 1'b0;
+		if (rst || flush) begin
+			sweep <= 1'b1; sw_a <= '0; u2 <= 1'b0; sw_req <= 1'b0;
+			f_has <= 1'b0; f_act <= 1'b0; f_iss <= 1'b0; f_kill <= 1'b0; mk_rq <= 1'b0;
+			cur_ok <= 1'b0; mp_pend <= 1'b0; mp_wait <= 1'b0; pf_rq <= 1'b0; pf_look <= 1'b0; pf_go <= 1'b0;
+		end else begin
+			// flush sweep: both entries of every set = {0, 00}
+			if (sweep) begin
+				sw_a <= sw_a + 1'b1;
+				if (&sw_a) begin sweep <= 1'b0; sw_end <= 1'b1; end
+				if (rhc_on && c_new && !ramh_onchip) sw_req <= 1'b1;
+			end
+			if (sw_end) sw_req <= 1'b0;
+			if (rhc_on && acc && sel == C_RAMH_R) f_iss <= 1'b1;
+			// a write to the line of a running fill spoils it (as rh_kill)
+			if (u0 && f_act && f_line == rw_addr[19:5]) f_kill <= 1'b1;
+			// a half is marked one clk after its last longword was written
+			if (rhc_on && rd_valid && cur == C_RAMH_R && rcnt[2:0] == 3'd7) begin mk_now <= 1'b1; mk_h <= f_h0 | rcnt[3]; end
+			if (pb_mk) mk_rq <= 1'b0;
+			// (a waiter's line is the fill's: mp_wait is set with mp_line = f_line, and no set-up runs while it waits)
+			if (mk_now && !f_kill) begin
+				f_v <= fv_now; mk_rq <= 1'b1;
+				if (mp_wait && mp_half == mk_h) begin
+					mp_wait <= 1'b0; cur_ok <= 1'b1; cur_line <= f_line; cur_way <= f_way; cur_hv <= fv_now;
+				end else if (cur_ok && cur_line == f_line) cur_hv <= fv_now;
+			end
+			// the fill's last word is in: done; a demand fill starts the prefetch; a waiter that did not get its half
+			// (its fill was spoiled) is looked up again
+			if (rh_done && rhc_on && f_act) begin
+				f_act <= 1'b0; f_iss <= 1'b0;
+				if (!f_pf && rhc_pf && f_line != 15'h7FFF) begin pf_rq <= 1'b1; pf_line <= f_line + 15'd1; end
+				if (mp_wait && !(mk_now && !f_kill && mp_half == mk_h)) begin mp_wait <= 1'b0; rl_req <= 1'b1; end
+			end
+			// lookups (LK2)
+			if (k_v) begin
+				if (k_hit) begin
+					cur_ok <= 1'b1; cur_line <= k_line; cur_way <= k_way; cur_hv <= k_pv;
+					lru_we <= 1'b1; lru_wa <= k_set; lru_wd <= !k_way;
+				end else if (k_coming) begin
+					if (mk_now && !f_kill && mk_h == k_half) begin            // its half is marked now
+						cur_ok <= 1'b1; cur_line <= k_line; cur_way <= f_way; cur_hv <= fv_now;
+					end else if (rh_done && f_act) rl_req <= 1'b1;            // its fill ended without it: look again
+					else begin mp_wait <= 1'b1; mp_line <= k_line; mp_half <= k_half; end
+				end else begin
+					mp_pend <= 1'b1; mp_line <= k_line; mp_half <= k_half;
+					mp_pres <= k_pres; mp_pw <= k_way; mp_pv <= k_pv; mp_vic <= k_vic;
+					mp_ovp <= k_ovp; mp_prs <= k_pres && (!k_ovp || f_tag == k_tag);
+					mp_kcur <= cur_ok && cur_set == k_set && cur_way == (k_pres ? k_way : k_vic) && cur_line != k_line;
+					pf_rq <= 1'b0; pf_look <= 1'b0; pf_go <= 1'b0;   // the demand goes first
+				end
+			end
+			// demand fill set-up (a prefetch not yet issued is dropped)
+			if (pb_su) begin
+				f_has <= 1'b1; f_act <= 1'b1; f_iss <= 1'b0; f_pf <= 1'b0; f_kill <= 1'b0;
+				f_line <= mp_line; f_set <= s_set; f_way <= s_way; f_tag <= s_tag; f_v <= s_v;
+				f_h0 <= mp_half; f_two <= !mp_prs && !mp_half;
+				lru_we <= 1'b1; lru_wa <= s_set; lru_wd <= !s_way;
+				if (mp_kcur) cur_ok <= 1'b0;
+				mp_pend <= 1'b0; mp_wait <= 1'b1;
+				pf_rq <= 1'b0; pf_look <= 1'b0; pf_go <= 1'b0;
+			end
+			// prefetch: look the next line up, set it up if no way holds it
+			if (pb_pfr) pf_look <= 1'b1;
+			if (pf_look) begin
+				pf_look <= 1'b0;
+				if (pf_hit || mp_pend) pf_rq <= 1'b0;
+				else begin pf_go <= 1'b1; pf_way <= pf_vic; end
+			end
+			if (pf_go && pf_kcur) begin pf_go <= 1'b0; pf_rq <= 1'b0; end   // the current line moved into its way: dropped
+			if (pb_pfs) begin
+				pf_go <= 1'b0; pf_rq <= 1'b0; f_tgl <= ~f_tgl;
+				f_has <= 1'b1; f_act <= 1'b1; f_iss <= 1'b0; f_pf <= 1'b1; f_kill <= 1'b0;
+				f_line <= pf_line; f_set <= pf_set; f_way <= pf_way; f_tag <= pf_tag; f_v <= 2'b00; f_h0 <= 1'b0; f_two <= 1'b1;
+				lru_we <= 1'b1; lru_wa <= pf_set; lru_wd <= pf_way;   // the prefetched line is its set's next victim
+				if (cur_ok && cur_set == pf_set && cur_way == pf_way) cur_ok <= 1'b0;
+			end
+		end
+	end
+`ifdef A8_RHC_SW
+	// (bench) the buffer has nothing running: the switch to the cache may happen in this clk
+	wire rhc_safe = !rh_fill && !rh_pend && !rh_wait && !(busy_m && cur == C_RAMH_R) && !(gsel_v && gsel == C_RAMH_R);
+`endif
+`endif
 	// one block for all state: the access part first, then the client front ends (a new VDP1 fill started in the
 	// clk its previous fill's chunk is issued wins)
 	always_ff @(posedge clk) begin

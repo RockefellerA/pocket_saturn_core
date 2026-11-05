@@ -1514,6 +1514,36 @@ localparam REG_DT = 17;
 	wire [15:0] rylData = ryIsAreg ? (Nanod.dbl2ryl ? Dbl : Abl) :
 		Nanod.dbl2ryl ? Dbd : abdIsByte ? { ryL[15:8], Abd[7:0]} : Abd;
 
+`ifdef FRESH_VCM_REGM10K
+	wire rxhWr = Nanod.dbh2rxh | Nanod.abh2rxh;
+	wire ryhWr = Nanod.dbh2ryh | Nanod.abh2ryh;
+	// FRESH_VCM_REGM10K: each half of the register file in one true-dual-port M10K instead of two MLABs (a LAB each).
+	// Port A is RX (written on T3), port B is RY (written the clock after T3); the write data and the write enable
+	// are the shared ones below (a port only writes when its address is the write address: RX on T3, RY on T3 + 1).
+	// An M10K reads at the clock edge, with the address it registers then, so each port's address is the value
+	// actualRx / actualRy takes after that edge (they load on T4): from the next clock on, the port's output is the
+	// register the MLAB's asynchronous read gave, except in the clock after a write: a port's own write (same-port
+	// read during write) leaves its output undefined for that clock (no_rw_check; the RTL below reads the old word),
+	// and the other port's write to the same word (mixed-port: old data) is not seen yet. Neither is read: after the
+	// RX write on T3 the only read on the next clock would be the RY byte write's read-modify-write (ryL[15:8]), and
+	// no nano word writes RX from DBL and RY from ABL with the byte flag (nanorom1k_pd.mem: words 234 and 238 have
+	// both writes, neither has ABDHRECHARGE), so RY's write is then a whole word; after the RY write the next read is
+	// at the earliest on the second clock edge (ldPreD, with the T4 enable in between), where the M10K has caught up.
+	// Exact under the Saturn's phase-enable spacing (an enable-free clock between any two enables, as step K's changes
+	// already need): with enables on consecutive clocks, T4 could follow the RY write at once.
+	wire [4:0] regsRxA = enT4 ? rxMux : actualRx;
+	wire [4:0] regsRyA = enT4 ? ryMux : actualRy;
+
+	assign regsWrL = enT3 ? rxlWr : enT3d & rylWr;
+	assign regsDataL = enT3 ? rxlData : rylData;
+	assign regsWrH = enT3 ? rxhWr : enT3d & ryhWr;
+	assign regsDataH = enT3 ? (Nanod.dbh2rxh ? Dbh : Abh) : (Nanod.dbh2ryh ? Dbh : Abh);
+
+	fx68kRegsM10K regsL( .clk( Clks.clk), .addrA( regsRxA), .weA( enT3 & regsWrL), .addrB( regsRyA), .weB( enT3d & regsWrL),
+		.wdata( regsDataL), .qA( rxL), .qB( ryL));
+	fx68kRegsM10K regsH( .clk( Clks.clk), .addrA( regsRxA), .weA( enT3 & regsWrH), .addrB( regsRyA), .weB( enT3d & regsWrH),
+		.wdata( regsDataH), .qA( rxH), .qB( ryH));
+`else
 	assign regsWrL = enT3 ? rxlWr : enT3d & rylWr;
 	assign regsAddrL = enT3 ? actualRx : actualRy;
 	assign regsDataL = enT3 ? rxlData : rylData;
@@ -1529,6 +1559,7 @@ localparam REG_DT = 17;
 		.raddrA( actualRx), .raddrB( actualRy), .qA( rxL), .qB( ryL));
 	fx68kRegs regsH( .clk( Clks.clk), .we( regsWrH), .waddr( regsAddrH), .wdata( regsDataH),
 		.raddrA( actualRx), .raddrB( actualRy), .qA( rxH), .qB( ryH));
+`endif
 
 	// PC & AT
 	reg dbl2Pcl, dbh2Pch, abh2Pch, abl2Pcl;
@@ -1690,6 +1721,29 @@ module fx68kRegs( input clk, input we, input [4:0] waddr, input [15:0] wdata,
 	assign qA = ramA[ raddrA];
 	assign qB = ramB[ raddrB];
 endmodule
+`ifdef FRESH_VCM_REGM10K
+// FRESH_VCM_REGM10K: a register-file half as one true-dual-port M10K (32 x 16, 18 used), one write data for both
+// ports. Each port registers its address on every clock and reads the array there: the old word on a write (in
+// hardware a port's own write leaves that clock's output undefined, no_rw_check; the other port's write is old data).
+module fx68kRegsM10K( input clk, input [15:0] wdata,
+	input [4:0] addrA, input weA, output reg [15:0] qA,
+	input [4:0] addrB, input weB, output reg [15:0] qB);
+
+	(* ramstyle = "M10K, no_rw_check" *) reg [15:0] ramA[ 32];
+
+	always_ff @( posedge clk) begin
+		if( weA)
+			ramA[ addrA] <= wdata;
+		qA <= ramA[ addrA];
+	end
+
+	always_ff @( posedge clk) begin
+		if( weB)
+			ramA[ addrB] <= wdata;
+		qB <= ramA[ addrB];
+	end
+endmodule
+`endif
 
 //
 // Data bus I/O
@@ -1828,6 +1882,27 @@ module uaddrDecode(
 	wire [2:0] grp = (line[3] | (line == 4'h7)) ? { (line == 4'hE) ? irc[11] : line[2], line[1:0]} : irc[11:9];
 	wire [12:0] romAddr = { page, grp, irc[8:6], col};
 
+`ifdef FRESH_VCM_UADDR2
+	// FRESH_VCM_UADDR2: the 8192 x 32 ROM holds only 518 distinct words, so it is read in two levels: uaddridx.mem
+	// (8192 x 10, the word's index, read on every clock) and uaddrword.mem (1024 x 32, the words, read on irLoad;
+	// index 0 = the word at address 0, which the old address register powered up with). 14 M10K instead of 32.
+	// Exact under the Saturn's phase-enable spacing: the index read on the clock before irLoad (a phi1 enable) uses
+	// IRC as it is on that edge, and IRC only changes on a phi2 enable, which never falls on the edge before a phi1 one.
+	(* romstyle = "M10K" *) reg [9:0] uaddrIdx[ 8192];
+	(* romstyle = "M10K" *) reg [31:0] uaddrWord[ 1024];
+	initial begin
+		$readmemh("uaddridx.mem", uaddrIdx);
+		$readmemh("uaddrword.mem", uaddrWord);
+	end
+
+	reg [9:0] idxQ;
+	reg [31:0] romQ;
+	always_ff @( posedge clk) begin
+		idxQ <= uaddrIdx[ romAddr];
+		if( irLoad)
+			romQ <= uaddrWord[ idxQ];
+	end
+`else
 	(* romstyle = "M10K" *) reg [31:0] uaddrRom[ 8192];
 	initial begin
 		$readmemh("uaddrrom.mem", uaddrRom);
@@ -1837,6 +1912,7 @@ module uaddrDecode(
 	always_ff @( posedge clk)
 		if( irLoad)
 			romQ <= uaddrRom[ romAddr];
+`endif
 
 	wire [31:0] dec = romQ ^ OP0000;
 	assign a1 = dec[ 9:0];
@@ -2434,6 +2510,19 @@ endmodule
 //
 
 module uRom( input clk, input [UADDR_WIDTH-1:0] microAddr, output logic [UROM_WIDTH-1:0] microOutput);
+`ifdef FRESH_VCM_UROM2
+	// FRESH_VCM_UROM2: the 1024 x 17 ROM took 4 M10K (Quartus split it 2K x 5 four times); as two ROMs of 10 and 7
+	// bits (microrom_lo.mem / microrom_hi.mem = the same words split) it is two 1K x 10 blocks.
+	(* romstyle = "M10K" *) reg [9:0] uRamL[ UROM_DEPTH];
+	(* romstyle = "M10K" *) reg [UROM_WIDTH-11:0] uRamH[ UROM_DEPTH];
+	initial begin
+		$readmemb("microrom_lo.mem", uRamL);
+		$readmemb("microrom_hi.mem", uRamH);
+	end
+	
+	always_ff @( posedge clk) 
+		microOutput <= { uRamH[ microAddr], uRamL[ microAddr]};
+`else
 	reg [UROM_WIDTH-1:0] uRam[ UROM_DEPTH];		
 	initial begin
 		$readmemb("microrom.mem", uRam);
@@ -2441,6 +2530,7 @@ module uRom( input clk, input [UADDR_WIDTH-1:0] microAddr, output logic [UROM_WI
 	
 	always_ff @( posedge clk) 
 		microOutput <= uRam[ microAddr];
+`endif
 endmodule
 
 

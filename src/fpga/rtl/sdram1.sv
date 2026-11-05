@@ -146,7 +146,18 @@ module sdram1
 	reg [16: 1] raddr01[2];
 	reg [16: 1] raddr23[2];
 	reg [17: 1] waddr[2];
+`ifdef FRESH_SDRAM1_DIN
+	// (FRESH_SDRAM1_DIN, work/fresh/glue, 2026-11-04) no copy of the write data: the VDP2 changes VRAMA_D (= din_a = din_b)
+	// only at DOT_CE_F, which is the clk_ram edge that starts the st_num == 15 slot (DCE_R -> sync -> st_num = 8 three
+	// clk_ram after the DOT_CE_R clk_sys cycle; DOT_CE_F is 4 clk_sys after DOT_CE_R), one clk before the copy was taken;
+	// the copy was used in slots 4, 5, 12 and 13 of the next period, during which the VDP2 register holds the same
+	// value (it changes again at the start of slot 15). Exact; see the report for the derivation.
+	wire [63: 0] din[2];
+	assign din[0] = din_a;
+	assign din[1] = din_b;
+`else
 	reg [63: 0] din[2];
+`endif
 	reg [ 7: 0] wr[2];
 	reg         rd[2];
 	reg [19: 1] addr2;			// (a1: no addr2_pipe: addr2 cannot change between a read's ACTIVE and its READ, see slot 0)
@@ -182,7 +193,9 @@ module sdram1
 				raddr01 <= '{addr_a0[16:1],addr_a1[16:1]};
 				raddr23 <= '{addr_b0[16:1],addr_b1[16:1]};
 				waddr <= '{addr_a0,addr_b0};
+`ifndef FRESH_SDRAM1_DIN
 				din <= '{din_a,din_b};
+`endif
 				wr <= '{wr_a,wr_b};
 				rd <= '{rd_a & ~|wr_a,rd_b & ~|wr_b};
 			end

@@ -106,8 +106,29 @@ module SH_core
 `endif
 	assign REGS_RBN = ID_DECI.RB.N;
 	
+`ifdef FRESH_SH2_REGM10K
+`ifdef DEBUG
+	$error("FRESH_SH2_REGM10K does not support DEBUG builds (the register view reads the file at DBG_REGN)");
+`endif
+	// FRESH_SH2_REGM10K (fresh-eyes review, sh2 item 1; mirrored in SH_core_cs.sv): the register file in M10K
+	// (SH2_regfile_m10k), read at the edge that ends the ID clock where PIPE.EX.RA / RB load (CE & EN & RES_N &
+	// !ID_STALL); its output then holds and is PIPE.EX.RA / RB for the EX clock, so those registers have no reader and
+	// go (their loads below are dead). The soft-reset zeroing of PIPE.EX.RA / RB is the flag EXR_Z.
+	wire        REGS_RD_EN = CE & EN & RES_N & ~ID_STALL;
+	bit         EXR_Z;
+	always @(posedge CLK or negedge RST_N) begin
+		if (!RST_N) EXR_Z <= 1;
+		else if (!RES_N) EXR_Z <= 1;
+		else if (REGS_RD_EN) EXR_Z <= 0;
+	end
+	SH2_regfile_m10k regfile (CLK, RST_N, CE, EN, REGS_WAN, REGS_WAD, REGS_WAE, REGS_WBN, REGS_WBD, REGS_WBE, 
+								REGS_RAN, REGS_RBN, REGS_RD_EN, REGS_RAQ, REGS_RBQ, REGS_R0Q);
+	wire [31: 0] EXRA_Q = REGS_RAQ & {32{~EXR_Z}};
+	wire [31: 0] EXRB_Q = REGS_RBQ & {32{~EXR_Z}};
+`else
 	SH2_regfile regfile (CLK, RST_N, CE, EN, REGS_WAN, REGS_WAD, REGS_WAE, REGS_WBN, REGS_WBD, REGS_WBE, 
 								REGS_RAN, REGS_RAQ, REGS_RBN, REGS_RBQ, REGS_R0Q);
+`endif
 
 	
 	//**********************************************************
@@ -518,7 +539,11 @@ end endgenerate
 			BP_A = PIPE.WB2.RESB;
 		end
 		else begin
+`ifdef FRESH_SH2_REGM10K
+			BP_A = EXRA_Q;
+`else
 			BP_A = PIPE.EX.RA;
+`endif
 		end
 	
 		REG_A = BP_A;
@@ -542,7 +567,11 @@ end endgenerate
 			BP_B = PIPE.WB2.RESB;
 		end
 		else begin
+`ifdef FRESH_SH2_REGM10K
+			BP_B = EXRB_Q;
+`else
 			BP_B = PIPE.EX.RB;
+`endif
 		end
 		
 		case (PIPE.EX.DI.DP.RSB)

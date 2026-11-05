@@ -20,6 +20,9 @@ module wr_queue #(
 	input  logic    [1:0] req_be,
 	output logic          full,        // fewer than 2 command or 4 data slots left
 	output logic          empty,       // nothing queued (a write may still run in the memory)
+`ifdef FRESH_VBUSY
+	output logic          full_n,      // (FRESH_VBUSY) the value full takes at the next edge
+`endif
 	output logic          m_valid,
 	input  logic          m_ready,
 	output logic [AW-1:0] m_addr,
@@ -29,9 +32,26 @@ module wr_queue #(
 	output logic    [1:0] m_wd_be
 );
 	localparam int CN = 1 << CD, DN = 1 << DD;
+`ifdef FRESH_WRQ_LENRAM
+	// (FRESH_WRQ_LENRAM, work/fresh/glue, 2026-11-04) the command lengths live in the address RAM word ({len, addr})
+	// instead of CN registers: the open command's length is a register (o_len), bumped by a merge, which then rewrites
+	// the open command's RAM word ({o_len + 1, its block = o_next's, its start offset o_lo}); m_len = o_len while the
+	// head is the open command, else the RAM word's field. The same m_len whenever m_valid is high (the arbiter uses
+	// m_addr / m_len only then): a merge into the head slot is answered by o_len; a closed command's word was last
+	// written at a merge at least one edge before the push that closed it, so its field is in head_a from the first clk
+	// the head is not open (the lockstep bench finds m_len identical in every clk, m_valid high or low).
+	// (A second form, the length in its own byte lane written alone at a merge, came out worse: Quartus kept that lane
+	// in registers.)
+	logic [AW+4:0] amem [CN];          // {len, addr}
+	logic   [17:0] dmem [DN];
+	logic    [4:0] o_len;              // the open command's length (words - 1)
+	logic    [4:0] o_lo;               // its start offset in the block
+	logic [AW+4:0] head_q;
+`else
 	logic [AW-1:0] amem [CN];
 	logic   [17:0] dmem [DN];
 	logic    [4:0] len [CN];
+`endif
 	logic   [CD:0] chead, ctail, ccnt;
 	logic   [DD:0] dhead, dtail, dcnt;
 	logic          open;
@@ -49,11 +69,20 @@ module wr_queue #(
 	// dcnt >= DN - 4; ccnt == 0), from the next counter values per case of push / take / req_valid / m_wd_pop
 	logic mv_r = 1'b0, full_r = 1'b0, empty_r = 1'b1;
 	assign m_valid   = mv_r;
+`ifdef FRESH_WRQ_LENRAM
+	assign head_a    = head_q[AW-1:0];
+	assign m_addr    = head_a;
+	assign m_len     = head_is_open ? o_len : head_q[AW+4:AW];
+`else
 	assign m_addr    = head_a;
 	assign m_len     = len[chead[CD-1:0]];
+`endif
 	assign {m_wd_be, m_wd_data} = dq;
 	assign full      = full_r;
 	assign empty     = empty_r;
+`ifdef FRESH_VBUSY
+	assign full_n    = !rst && (cfull_n || dfull_n);   // (FRESH_VBUSY) = full_r's next value (below)
+`endif
 	wire mv_n    = take ? (push ? ccnt >= (CD+1)'(2) : ccnt != (CD+1)'(1)) : ccnt != '0;
 	wire cfull_n = (push && !take) ? ccnt >= (CD+1)'(CN - 2) : (!push && take) ? ccnt >= (CD+1)'(CN) : ccnt >= (CD+1)'(CN - 1);
 	wire dfull_n = (req_valid && !m_wd_pop) ? dcnt >= (DD+1)'(DN - 5) : (!req_valid && m_wd_pop) ? dcnt >= (DD+1)'(DN - 3) : dcnt >= (DD+1)'(DN - 4);
@@ -62,8 +91,14 @@ module wr_queue #(
 	wire [CD:0] chead_n = chead + (CD+1)'(take);
 	wire [DD:0] dhead_n = dhead + (DD+1)'(m_wd_pop);
 	always_ff @(posedge clk) begin
+`ifdef FRESH_WRQ_LENRAM
+		if (push)       amem[ctail[CD-1:0]]        <= {5'd0, req_addr};
+		else if (merge) amem[ctail[CD-1:0] - 1'b1] <= {o_len + 5'd1, o_next[AW-1:5], o_lo};
+		head_q <= amem[chead_n[CD-1:0]];
+`else
 		if (push) amem[ctail[CD-1:0]] <= req_addr;
 		head_a <= amem[chead_n[CD-1:0]];
+`endif
 		if (req_valid) dmem[dtail[DD-1:0]] <= {req_be, req_data};
 		dq <= dmem[dhead_n[DD-1:0]];
 	end
@@ -80,11 +115,19 @@ module wr_queue #(
 			ccnt  <= ccnt + (CD+1)'(push) - (CD+1)'(take);
 			dcnt  <= dcnt + (DD+1)'(req_valid) - (DD+1)'(m_wd_pop);
 			if (req_valid) dtail <= dtail + 1'b1;
+`ifdef FRESH_WRQ_LENRAM
+			if (merge) begin
+				o_len <= o_len + 5'd1; o_next <= o_next + 1'b1;
+			end else if (push) begin
+				o_len <= 5'd0; o_lo <= req_addr[4:0]; ctail <= ctail + 1'b1; open <= 1'b1; o_next <= req_addr + 1'b1;
+			end else if (take && head_is_open) begin
+`else
 			if (merge) begin
 				len[ctail[CD-1:0] - 1'b1] <= len[ctail[CD-1:0] - 1'b1] + 5'd1; o_next <= o_next + 1'b1;
 			end else if (push) begin
 				len[ctail[CD-1:0]] <= 5'd0; ctail <= ctail + 1'b1; open <= 1'b1; o_next <= req_addr + 1'b1;
 			end else if (take && head_is_open) begin
+`endif
 				open <= 1'b0;
 			end
 		end

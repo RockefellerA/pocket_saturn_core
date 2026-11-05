@@ -95,7 +95,20 @@ foreach {c inst} {cram0 iarb|phy cram1 ifb|psram} {
 # timing paths and no constraints. (Option (a)'s block for the 55 ns part: work/a5/tree's core_constraints.sdc.)
 # SDRAM (sdram1, MiSTer's controller unchanged: commands on clk_ram, SDRAM clock = clk_ram inverted by a DDIO cell,
 # data captured by I/O-cell registers): left unconstrained as on MiSTer and in the sotn port (glue/REPORT R5: the
-# capture phase has to be checked on the Pocket's board). Video, audio, bridge and misc pins: unconstrained (as sotn).
+# capture phase has to be checked on the Pocket's board). Video, audio and misc pins: unconstrained (as sotn); the
+# bridge's inputs: below (A8).
+# (A8, 2026-11-04) APF bridge inputs. apf/io_bridge_peripheral.v takes MOSI / MISO (two bits per clock, APF -> core:
+# addresses, commands, write data, the data slot reads' sectors) at the rising edge of bridge_spiclk, which reaches those
+# registers through the fabric (6.8-7.1 ns from its pin); APF changes the lines at the falling edge. Unconstrained (as
+# sotn), the data paths followed the placement, and on the Pocket every build whose MOSI / MISO arrived more than ~3.6 ns
+# after that clock failed: A7 fa_s11 5.3 ns ("Host commands ignored"), A8 r16nc_s1 4.8 ns (no disc: the CD firmware's
+# data slot reads); every one at <= 3.6 ns worked: A3, A5, A6, A7b, A7c, A7d 0.9-3.6 ns (work/a8/tools/bridge.tcl).
+# Against these delays the working builds pass at 3.0 ns and the failing ones fail (a8/tools/bridge_check.tcl), so
+# APF's own delay lies between ~1.8 and ~3.1 ns: 4.0 ns keeps ~1 ns over it. Min 0: the hold check (the falling edge's
+# new data against the rising edge before it) has 2.4-4.3 ns in every build. (Core -> APF: the core drives the clock
+# and the data from clk_74a registers a clk_74a period apart: left unconstrained.)
+set_input_delay -clock bridge_spiclk -clock_fall -max 4.0 [get_ports {bridge_spimosi bridge_spimiso}]
+set_input_delay -clock bridge_spiclk -clock_fall -min 0.0 [get_ports {bridge_spimosi bridge_spimiso}]
 
 # ------------------------------------------------------------------------------------------------------------------
 # (A2) VDP2 dot pipeline: a genuine multicycle path (Saturn_MiSTer rtl/Saturn/VDP2/VDP2.sv, unchanged by the Pocket port)
