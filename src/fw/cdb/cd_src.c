@@ -21,6 +21,8 @@
 // slot for more read-ahead; a read the drive asks for that is there is handed over by swapping pages (the drive's
 // page becomes a spare one): ring + L2N sectors ahead with no more block RAM. A PAUSE re-read of the sector the
 // drive's page still holds is answered at once.
+// Region: once the layout is built, before the disc goes in, the system ID in track 1's first sector gives the disc's
+// area code (disc_area(), IO_X_AREA); pk_settings uses it for Region = Auto.
 #include "cd_src.h"
 #ifdef SMPC_FW
 #include "smpc.h"
@@ -278,8 +280,44 @@ static bool cue_parse(void)
 	return !P.bad;
 }
 
+static int find_x(int32_t lba);
+
+// The disc's area for Region = Auto: the first compatible area symbol of the system ID (track 1's first sector, user
+// data bytes 0x40-0x49: "J", "U", "E", ...) as an SMPC area code, the one MiSTer's emu takes from the boot header it
+// gets from its main program. 0 (none: pk_settings keeps USA) without a data track 1 that starts with the Saturn's
+// hardware ID, or for a symbol not in the list. Read through ring slot 0 into the spare page, as the .cue is: before
+// the disc goes in nothing else uses either.
+static unsigned __attribute__((noinline)) disc_area(void)
+{
+	static const char hw_id[] = "SEGA SEGASATURN ", sym[] = "JTUBKAEL";
+	static const uint8_t code[] = { 0x1, 0x2, 0x4, 0x5, 0x6, 0xA, 0xC, 0xD };
+	if(!D.ntr || !((D.tr[0] >> 28) & 4))
+		return 0;
+	const int32_t lba = (int32_t)(D.tr[0] & 0xFFFFFF);
+	const int xi = find_x(lba);
+	if(xi < 0)
+		return 0;
+	const struct ext* x = &D.x[xi];
+	cmd_start(fid(x->fpos >> 24), ((x->fpos & 0xFFFFFF) + (uint32_t)(lba - x->lba)) * SECB, SECB, 0);
+	while(cmd_busy()) POLL();
+	IO_SEC_PAGE = CUE_PAGE;
+	IO_SEC_LBA = 0;
+	while(IO_FLAGS & F_SEC_BUSY) POLL();
+	const uint32_t w = page_word(CUE_PAGE);
+	const uint32_t u = w + ((cd_rd16(w + 7) & 0xFF) == 2 ? 12 : 8);   // user data words: mode 1 from byte 16, mode 2
+	for(unsigned i = 0; i < 8; i++)                                    // form 1 from byte 24 (byte 15: the mode)
+		if(cd_rd16(u + i) != ((unsigned)(uint8_t)hw_id[2 * i] << 8 | (uint8_t)hw_id[2 * i + 1]))
+			return 0;
+	const uint8_t s = (uint8_t)(cd_rd16(u + 0x20) >> 8);              // (byte 0x40: the first symbol)
+	for(unsigned i = 0; i < 8; i++)
+		if(s == (uint8_t)sym[i])
+			return code[i];
+	return 0;
+}
+
 static void scan_done(void)
 {
+	IO_X_AREA = disc_area();                        // (before DISC: a reset this causes comes before the disc is read)
 	D.magic = DISC_MAGIC;
 	IO_X_DISC = D.ntr != 0;
 }

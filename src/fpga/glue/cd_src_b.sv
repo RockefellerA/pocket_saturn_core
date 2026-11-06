@@ -13,6 +13,8 @@
 //   0x6C W START   start the data slot read (ID / OFFSET / DEST held until STATUS.cmd_busy falls)
 //   0x70 W DTADDR  {table word [9:0]}: read the data slot table (entry e: id at word 2e, size at 2e + 1)
 //   0x74 W DISC    {disc_in [0]}: CDB_HLE's DISC_IN (the firmware's TOC is ready)
+//   0x78 W AREA    {area code [3:0]}: the disc's SMPC area code from its system ID (0: none), once per scan, before
+//                  DISC; out on area with area_wr for one clock (pk_settings: Region = Auto)
 // Sector requests: the firmware writes the page to IO_SEC_PAGE and, in place of an LBA, IO_SEC_LBA = {zero sector[23],
 // ring word address [13:0]} (slot s: word s * 1176); CDB_HLE passes it on SEC_LBA with SEC_REQ.
 // Clocks: clk_sys (registers, streamer, ring read), clk_74a (APF side of cd_apf, ring write).
@@ -30,6 +32,8 @@ module cd_src_b #(
 	output     [31: 0] ext_rd,
 
 	output reg         disc_in,
+	output reg [ 3: 0] area = 4'h0,
+	output reg         area_wr = 1'b0,
 	input              sec_req,
 	input      [23: 0] sec_lba,
 	output             sec_wr,
@@ -59,7 +63,7 @@ module cd_src_b #(
 	wire [ 2:0] cmd_err;
 
 	always @(posedge clk) begin
-		dt_rd <= 0; cmd_start <= 0;
+		dt_rd <= 0; cmd_start <= 0; area_wr <= 0;
 		if (!rst_n) disc_in <= 0;
 		else if (ext_we) case (ext_a)
 			3'd0: id <= ext_wd[7:0];
@@ -68,6 +72,7 @@ module cd_src_b #(
 			3'd3: cmd_start <= 1;
 			3'd4: begin dt_addr <= ext_wd[5:0]; dt_rd <= 1; end
 			3'd5: disc_in <= ext_wd[0];
+			3'd6: begin area <= ext_wd[3:0]; area_wr <= 1; end
 			default:;
 		endcase
 	end

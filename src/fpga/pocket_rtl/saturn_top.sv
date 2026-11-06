@@ -142,6 +142,8 @@ module saturn_top #(
 `endif
 	wire [ 2:0] cart_type, cart_type_74;
 	wire [ 3:0] area_code;
+	wire [ 3:0] disc_area;                 // clk_sys: the disc's area code from the CD source (cd_src_b)
+	wire        disc_area_wr;
 	wire        set_fast, set_blur, set_bob, set_dz;
 	wire [ 1:0] set_padmap;
 	wire [64:0] RTC;
@@ -165,7 +167,8 @@ module saturn_top #(
 	pk_settings iset (
 		.clk_74a(clk_74a), .bridge_addr(bridge_addr), .bridge_wr(bridge_wr), .bridge_wr_data(bridge_wr_data),
 		.rtc_valid(rtc_valid), .rtc_date_bcd(rtc_date_bcd), .rtc_time_bcd(rtc_time_bcd),
-		.clk_sys(clk_sys), .cart_type(cart_type), .area_code(area_code), .pal(PAL), .fast(set_fast), .blur(set_blur),
+		.clk_sys(clk_sys), .disc_area(disc_area), .disc_area_wr(disc_area_wr),
+		.cart_type(cart_type), .area_code(area_code), .pal(PAL), .fast(set_fast), .blur(set_blur),
 		.bob(set_bob), .padmap(set_padmap), .dz_en(set_dz), .usr_reset(usr_reset), .rtc(RTC), .cart_type_74(cart_type_74)
 `ifdef A6_DBG
 		, .dbg_layout(set_lay), .dbg_wcoff(set_wcoff), .dbg_flgoff(set_flgoff), .dbg_gap2(set_gap2)
@@ -419,7 +422,8 @@ module saturn_top #(
 	cd_src_b #(.SLOTS(6), .BRIDGE_LE(1), .BASE(4'h4)) icd (
 		.clk(clk_sys), .rst_n(~rst_sys),
 		.ext_we(CD_EXT_WE), .ext_a(CD_EXT_A), .ext_wd(CD_EXT_WD), .ext_rd(CD_EXT_RD),
-		.disc_in(CD_DISC_IN), .sec_req(CD_SEC_REQ), .sec_lba(CD_SEC_LBA), .sec_wr(CD_SEC_WR), .sec_data(CD_SEC_DATA),
+		.disc_in(CD_DISC_IN), .area(disc_area), .area_wr(disc_area_wr),
+		.sec_req(CD_SEC_REQ), .sec_lba(CD_SEC_LBA), .sec_wr(CD_SEC_WR), .sec_data(CD_SEC_DATA),
 		.sec_wait(CD_SEC_WAIT),
 		.clk_74a(clk_74a), .datatable_addr(cd_dt_addr), .datatable_q(datatable_q), .dsr_read(dsr_read), .dsr_id(dsr_id),
 		.dsr_offset(dsr_offset), .dsr_bridgeaddr(dsr_bridgeaddr), .dsr_length(dsr_length), .dsr_done(dsr_done),

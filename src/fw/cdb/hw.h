@@ -51,5 +51,6 @@ enum { TOC_WORD = 0x7F000 / 2 };
 #define IO_X_START   IO(0x6C)   // W start the data slot read
 #define IO_X_DTADDR  IO(0x70)   // W read the data slot table word [9:0] (entry e: id at 2e, size at 2e + 1)
 #define IO_X_DISC    IO(0x74)   // W {disc_in[0]} = CDB_HLE's DISC_IN
+#define IO_X_AREA    IO(0x78)   // W {area code[3:0]}: the disc's SMPC area code (0: none), for Region = Auto
 enum { XS_CMD_BUSY = 1 << 0, XS_DT_BUSY = 1 << 1, XS_DISC = 1 << 3 };
 #endif

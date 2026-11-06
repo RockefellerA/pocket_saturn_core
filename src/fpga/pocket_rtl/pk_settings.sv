@@ -15,8 +15,9 @@
 //   0x80000014  W  Deinterlacing (MiSTer O[29])         0 Weave (APF), 1 Bob                     (reset 0)
 //   0x80000018  W  Pad mapping (pk_pad presets)         0..3                                     (reset 0)
 //   not in interact.json, for an instance JSON's "memory_writes" (per game; MiSTer's main program takes these from
-//   the disc header and its database, which the Pocket does not have):
-//   0x80000020  W  area code for Region = Auto          SMPC area code 4 bits                    (reset 4 = USA)
+//   the disc header and its database, which the Pocket does not have; the area code is also read from the disc, below):
+//   0x80000020  W  area code for Region = Auto          SMPC area code 4 bits                    (reset 0 = none:
+//                                                       the disc's area, else USA)
 //   0x80000024  W  cartridge for Cartridge = Auto       0..5 as above                            (reset 0 = none)
 //   0x80000028  W  Dezaemon 2 RAM patch (MiSTer: on when the disc's product number is T-16804G)  (reset 0)
 //   (A6, work/a6: diagnostic build 0.0.1-a6dbg, only with `define A6_DBG; interact.json ids 8-11, "persist": false, so
@@ -31,7 +32,12 @@
 //   fast = 0 (Original) and dbg_* = the defaults (layout 0, write combining on, flags off, gap one) as constants, so
 //   synthesis removes the logic behind them; writes to 0x8000000C and 0x80000030-3C are ignored)
 // Derived as in MiSTer's emu: cart_type = Auto ? auto_cart : sel < 6 ? sel : 0; area_code from the region list
-// (Auto -> the auto register); PAL = area_code >= 0xA.
+// (Auto -> the auto register, else the disc's area, else USA); PAL = area_code >= 0xA.
+// The disc's area (disc_area, clk_sys): the CD block firmware reads it from the disc's system ID once per disc scan,
+// before the disc goes in (cd_src.c disc_area(), cd_src_b AREA), so only after the core has left reset: the BIOS may
+// already have read the SMPC's area code by then. A write that changes area_code (Region = Auto, no area code from
+// the instance JSON) therefore resets the core once, as the Core Settings "Reset" does (2^16 clk_sys); the scan after
+// that reset writes the same area again, which changes nothing. d_area is not reset by the core's reset.
 // RTC: core_bridge_cmd's host command 0x0090 (rtc_valid rising, BCD date 0xYYYYMMDD / time 0x00HHMMSS) -> MiSTer's
 // 65-bit RTC bus {toggle[64], 0[63:48], year[47:40], month[39:32], day[31:24], hour[23:16], min[15:8], sec[7:0]}: the
 // data are registered in clk_74a one clock before the toggle flips; the toggle reaches the core (the SMPC firmware polls
@@ -49,6 +55,8 @@ module pk_settings (
 	input  wire [31:0] rtc_time_bcd,
 
 	input  wire        clk_sys,
+	input  wire [ 3:0] disc_area,          // clk_sys: the disc's SMPC area code (cd_src_b; 0: none)
+	input  wire        disc_area_wr,       // clk_sys: one clock with each firmware write of it
 	output reg  [ 2:0] cart_type = 3'd0,   // clk_sys: the core's CART_MODE
 	output reg  [ 3:0] area_code = 4'h4,   // clk_sys: SMPC_AREA
 	output reg         pal = 1'b0,         // clk_sys: PAL (core, CEGen rate select, clk_reconf mode, av_video)
@@ -69,7 +77,7 @@ module pk_settings (
 );
 	// ---------------------------------------------------------------- clk_74a registers
 	reg  [2:0] r_cart = 3'd0, r_region = 3'd7, r_acart = 3'd0;
-	reg  [3:0] r_aarea = 4'h4;
+	reg  [3:0] r_aarea = 4'h0;             // (0: not written, the disc's area)
 	reg        r_fast = 1'b0, r_blur = 1'b0, r_bob = 1'b0, r_dz = 1'b0;
 	reg  [1:0] r_pad = 2'd0;
 	reg [16:0] r_rst = 17'd0;              // [16]: reset pulse running
@@ -135,7 +143,7 @@ module pk_settings (
 	//  auto cart [3:1], dz [0]}
 `ifdef A6_DBG
 	// (A6) {layout [24:23], wcoff [22], flgoff [21], gap2 [20], then the bits above at [19:0]}
-	localparam [24:0] S_INIT = {2'd0, 1'b0, FLG_OFF0, 1'b0, 1'b0, 3'd7, 3'd0, 1'b0, 1'b0, 1'b0, 2'd0, 4'h4, 3'd0, 1'b0};   // (A7: FLG_OFF0)
+	localparam [24:0] S_INIT = {2'd0, 1'b0, FLG_OFF0, 1'b0, 1'b0, 3'd7, 3'd0, 1'b0, 1'b0, 1'b0, 2'd0, 4'h0, 3'd0, 1'b0};   // (A7: FLG_OFF0)
 	reg [24:0] s0 = S_INIT, s1 = S_INIT;
 	always @(posedge clk_sys) begin
 		s0 <= {r_lay, r_wcoff, r_flgoff, r_gap2, r_rst[16], r_region, r_cart, r_fast, r_blur, r_bob, r_pad, r_aarea, r_acart, r_dz};
@@ -153,7 +161,7 @@ module pk_settings (
 	assign dbg_gap2   = s1[20];
 `endif
 `else
-	localparam [19:0] S_INIT = {1'b0, 3'd7, 3'd0, 1'b0, 1'b0, 1'b0, 2'd0, 4'h4, 3'd0, 1'b0};
+	localparam [19:0] S_INIT = {1'b0, 3'd7, 3'd0, 1'b0, 1'b0, 1'b0, 2'd0, 4'h0, 3'd0, 1'b0};
 	reg [19:0] s0 = S_INIT, s1 = S_INIT;
 	always @(posedge clk_sys) begin
 		s0 <= {r_rst[16], r_region, r_cart, r_fast, r_blur, r_bob, r_pad, r_aarea, r_acart, r_dz};
@@ -162,7 +170,20 @@ module pk_settings (
 `endif
 	wire [2:0] s_region = s1[18:16], s_cart = s1[15:13], s_acart = s1[3:1];
 	wire [3:0] s_aarea = s1[7:4];
-	assign usr_reset = s1[19];
+
+	// the disc's area (kept across the core's resets) and the one reset when it changes area_code
+	reg  [ 3:0] d_area = 4'h0;
+	reg  [16:0] d_rst = 17'd0;             // [16]: the reset pulse running
+	wire [ 3:0] auto_area = (s_aarea != 4'h0) ? s_aarea : (d_area != 4'h0) ? d_area : 4'h4;   // (USA: no area)
+	always @(posedge clk_sys) begin
+		if (d_rst[16]) d_rst <= d_rst + 17'd1;
+		if (disc_area_wr) begin
+			d_area <= disc_area;
+			if (s_region == 3'd7 && s_aarea == 4'h0 && disc_area != 4'h0 && disc_area != area_code) d_rst <= 17'h10000;
+		end
+	end
+	assign usr_reset = s1[19] | d_rst[16];
+
 	always @(posedge clk_sys) begin
 `ifdef A8_TRIM
 		fast   <= 1'b0;                        // (A8) Timing = Original
@@ -182,7 +203,7 @@ module pk_settings (
 			3'd4: area_code <= 4'h6;           // Korea
 			3'd5: area_code <= 4'hA;           // Asia PAL
 			3'd6: area_code <= 4'hC;           // Europe PAL
-			default: area_code <= s_aarea;     // Auto
+			default: area_code <= auto_area;   // Auto
 		endcase
 		pal <= area_code >= 4'hA;
 	end
