@@ -10,6 +10,7 @@
 //   vdp1_fb (M10K + DDR3) -> vdp1fb_ext: FB0 = SRAM, FB1 = PSRAM 1, PS_BWC = 1 (D1 g)                   (D5: core's fetch)
 //   HPS2SEC              -> cd_src_b (design B2: EXT port registers, APF crossing, 6-slot ring, streamer) (D9)
 //   video_freak / mixer / cofi -> av_video (clk_pix = clk_sys / 2 + video_skip; APF weave or bob)       (D8)
+//                           + av_blank (black frames while av_video sends none: core reset, VDP2 held)
 //   audio_out            -> sound_i2s in core_top: sample and hold (D7; glue's av_audio48 INTERP = 0 is only a
 //                           register stage in front of it, left out: P2 report, "glue savings")
 //   hps_io status / joystick / ioctl / sd -> pk_settings, pk_pad, pk_loader, pk_save, pk_reset (work/pocket/rtl)
@@ -427,17 +428,26 @@ module saturn_top #(
 	);
 
 	// ============================================================================================== video, audio
+	wire [23:0] av_rgb;                    // clk_pix: av_video's APF signals, to av_blank
+	wire        av_de, av_skip, av_vs, av_hs;
 	av_video #(.FIELD_INV(0), .LASTF(1)) ivid (
 		.clk_sys(clk_sys), .dclk(DCLK), .r(R), .g(G), .b(B), .hbl_n(HBL_N), .vbl_n(VBL_N), .hs_n(HS_N), .vs_n(VS_N),
 		.field(FIELD), .interlace(INTERLACE), .hres(HRES), .vres(VRES), .pal(PAL), .bob(set_bob),
 `ifdef A6_DBG
 		.ovl_on(~set_flgoff), .ovl_flags(dbg_flags), .ovl_disp(dbg_disp), .ovl_set({set_lay, set_wcoff, set_gap2}),
-		.video_rgb_ov(video_rgb), .video_rgb(),
-		.clk_pix(clk_pix), .video_de(video_de), .video_skip(video_skip), .video_vs(video_vs),
+		.video_rgb_ov(av_rgb), .video_rgb(),
+		.clk_pix(clk_pix), .video_de(av_de), .video_skip(av_skip), .video_vs(av_vs),
 `else
-		.clk_pix(clk_pix), .video_rgb(video_rgb), .video_de(video_de), .video_skip(video_skip), .video_vs(video_vs),
+		.clk_pix(clk_pix), .video_rgb(av_rgb), .video_de(av_de), .video_skip(av_skip), .video_vs(av_vs),
 `endif
-		.video_hs(video_hs)
+		.video_hs(av_hs)
+	);
+	// black frames while av_video sends none (the core in reset, the VDP2 held by the SMPC): the scaler's memory, the
+	// last picture of whatever ran before, is overwritten from power-on (glue/av_blank.sv)
+	av_blank iblk (
+		.clk_pix(clk_pix), .dotsel(SMPC_DOTSEL),
+		.in_rgb(av_rgb), .in_de(av_de), .in_skip(av_skip), .in_vs(av_vs), .in_hs(av_hs),
+		.video_rgb(video_rgb), .video_de(video_de), .video_skip(video_skip), .video_vs(video_vs), .video_hs(video_hs)
 	);
 	// audio (D7): sound_i2s (core_top) takes the SCSP's held output itself (its FIFO writes on a change); glue's
 	// av_audio48 INTERP = 0 would only add a register stage (8 ALMs; left out, P2 report section 5)

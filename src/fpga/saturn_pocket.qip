@@ -33,6 +33,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) g
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/cd_stream.sv ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/cd_src_b.sv ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/av_video.sv ]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/av_blank.sv ]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) glue/av_audio48.sv ]
 
 # ---- Pocket top and new blocks (work/pocket/rtl)
